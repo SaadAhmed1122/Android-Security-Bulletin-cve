@@ -1,0 +1,2120 @@
+[{
+  "_id": {
+    "$oid": "65e0135643b5ec81ea0d328d"
+  },
+  "CVE": "CVE-2023-20928",
+  "References": {
+    "text": "A-254837884\n    Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/201d5f4a3ec1",
+    "metaData": {
+      "commit": "201d5f4a3ec12c639ecf2284da45a1ebd9e2141d",
+      "author": "Carlos Llamas <cmllamas@google.com>",
+      "committer": "Carlos Llamas <cmllamas@google.com>",
+      "tree": "4f8877b336f1a73b2869c8e7b1910ed153d47877",
+      "parent": "20af947ec911d9b4f59745115199d6f011909186 [diff]"
+    },
+    "metadataMessage": "FROMLIST: binder: fix UAF of alloc->vma in race with munmap()\n\nIn commit 720c24192404 (\"ANDROID: binder: change down_write to\ndown_read\") binder assumed the mmap read lock is sufficient to protect\nalloc->vma inside binder_update_page_range(). This used to be accurate\nuntil commit dd2283f2605e (\"mm: mmap: zap pages with read mmap_sem in\nmunmap\"), which now downgrades the mmap_lock after detaching the vma\nfrom the rbtree in munmap(). Then it proceeds to teardown and free the\nvma with only the read lock held.\n\nThis means that accesses to alloc->vma in binder_update_page_range() now\nwill race with vm_area_free() in munmap() and can cause a UAF as shown\nin the following KASAN trace:\n\n  ==================================================================\n  BUG: KASAN: use-after-free in vm_insert_page+0x7c/0x1f0\n  Read of size 8 at addr ffff16204ad00600 by task server/558\n\n  CPU: 3 PID: 558 Comm: server Not tainted 5.10.150-00001-gdc8dcf942daa #1\n  Hardware name: linux,dummy-virt (DT)\n  Call trace:\n   dump_backtrace+0x0/0x2a0\n   show_stack+0x18/0x2c\n   dump_stack+0xf8/0x164\n   print_address_description.constprop.0+0x9c/0x538\n   kasan_report+0x120/0x200\n   __asan_load8+0xa0/0xc4\n   vm_insert_page+0x7c/0x1f0\n   binder_update_page_range+0x278/0x50c\n   binder_alloc_new_buf+0x3f0/0xba0\n   binder_transaction+0x64c/0x3040\n   binder_thread_write+0x924/0x2020\n   binder_ioctl+0x1610/0x2e5c\n   __arm64_sys_ioctl+0xd4/0x120\n   el0_svc_common.constprop.0+0xac/0x270\n   do_el0_svc+0x38/0xa0\n   el0_svc+0x1c/0x2c\n   el0_sync_handler+0xe8/0x114\n   el0_sync+0x180/0x1c0\n\n  Allocated by task 559:\n   kasan_save_stack+0x38/0x6c\n   __kasan_kmalloc.constprop.0+0xe4/0xf0\n   kasan_slab_alloc+0x18/0x2c\n   kmem_cache_alloc+0x1b0/0x2d0\n   vm_area_alloc+0x28/0x94\n   mmap_region+0x378/0x920\n   do_mmap+0x3f0/0x600\n   vm_mmap_pgoff+0x150/0x17c\n   ksys_mmap_pgoff+0x284/0x2dc\n   __arm64_sys_mmap+0x84/0xa4\n   el0_svc_common.constprop.0+0xac/0x270\n   do_el0_svc+0x38/0xa0\n   el0_svc+0x1c/0x2c\n   el0_sync_handler+0xe8/0x114\n   el0_sync+0x180/0x1c0\n\n  Freed by task 560:\n   kasan_save_stack+0x38/0x6c\n   kasan_set_track+0x28/0x40\n   kasan_set_free_info+0x24/0x4c\n   __kasan_slab_free+0x100/0x164\n   kasan_slab_free+0x14/0x20\n   kmem_cache_free+0xc4/0x34c\n   vm_area_free+0x1c/0x2c\n   remove_vma+0x7c/0x94\n   __do_munmap+0x358/0x710\n   __vm_munmap+0xbc/0x130\n   __arm64_sys_munmap+0x4c/0x64\n   el0_svc_common.constprop.0+0xac/0x270\n   do_el0_svc+0x38/0xa0\n   el0_svc+0x1c/0x2c\n   el0_sync_handler+0xe8/0x114\n   el0_sync+0x180/0x1c0\n\n  [...]\n  ==================================================================\n\nTo prevent the race above, revert back to taking the mmap write lock\ninside binder_update_page_range(). One might expect an increase of mmap\nlock contention. However, binder already serializes these calls via top\nlevel alloc->mutex. Also, there was no performance impact shown when\nrunning the binder benchmark tests.\n\nNote this patch is specific to stable branches 5.4 and 5.10. Since in\nnewer kernel releases binder no longer caches a pointer to the vma.\nInstead, it has been refactored to use vma_lookup() which avoids the\nissue described here. This switch was introduced in commit a43cfc87caaf\n(\"android: binder: stop saving a pointer to the VMA\").\n\nBug: 254837884\nLink: https://lore.kernel.org/all/20221104175450.306810-1-cmllamas@google.com/\nFixes: dd2283f2605e (\"mm: mmap: zap pages with read mmap_sem in munmap\")\nReported-by: Jann Horn <jannh@google.com>\nCc: <stable@vger.kernel.org> # 5.10.x\nCc: Minchan Kim <minchan@kernel.org>\nCc: Yang Shi <yang.shi@linux.alibaba.com>\nCc: Liam Howlett <liam.howlett@oracle.com>\nSigned-off-by: Carlos Llamas <cmllamas@google.com>\nChange-Id: Ieabadbfa30f99812da9c226cf1ddd5e60f62c607\n(cherry picked from commit b684150a44187376ae2ea8369c400140ffc3ea67)\n[cmllamas: needed in android13-5.15 since a43cfc87caaf was reverted]",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/android/binder_alloc.c b/drivers/android/binder_alloc.c\nindex 2391e9f..d865158 100644\n--- a/drivers/android/binder_alloc.c\n+++ b/drivers/android/binder_alloc.c",
+          "files": [
+            "/kernel/common/+/20af947ec911d9b4f59745115199d6f011909186/drivers/android/binder_alloc.c",
+            "/kernel/common/+/201d5f4a3ec12c639ecf2284da45a1ebd9e2141d/drivers/android/binder_alloc.c"
+          ]
+        },
+        "diffUnified": "@@ -213,7 +213,7 @@\n \t\tmm = alloc->vma_vm_mm;\n \n \tif (mm) {\n-\t\tmmap_read_lock(mm);\n+\t\tmmap_write_lock(mm);\n \t\tvma = alloc->vma;\n \t}\n \n@@ -271,7 +271,7 @@\n \t\ttrace_binder_alloc_page_end(alloc, index);\n \t}\n \tif (mm) {\n-\t\tmmap_read_unlock(mm);\n+\t\tmmap_write_unlock(mm);\n \t\tmmput(mm);\n \t}\n \treturn 0;\n@@ -304,7 +304,7 @@\n \t}\n err_no_vma:\n \tif (mm) {\n-\t\tmmap_read_unlock(mm);\n+\t\tmmap_write_unlock(mm);\n \t\tmmput(mm);\n \t}\n \treturn vma ? -ENOMEM : -ESRCH;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "Binder driver"
+},
+{
+  "_id": {
+    "$oid": "65e0135643b5ec81ea0d328e"
+  },
+  "CVE": "CVE-2022-41674",
+  "References": {
+    "text": "A-253641805\n    Upstream kernel\n    [2]\n    [3]\n    [4]\n    [5]\n    [6]\n    [7]\n    [8]\n    [9]\n    [10]\n    [11]\n    [12]\n    [13]\n    [14]",
+    "link": "https://android.googlesource.com/kernel/common/+/9a8ef2030510a",
+    "metaData": {
+      "commit": "9a8ef2030510a9d6ce86fd535b8d10720230811f",
+      "author": "Johannes Berg <johannes.berg@intel.com>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "0be995a2c37184d61d20908fdf49b5f2947aa85c",
+      "parent": "398e30b67092a527e9df09b8e70e41b42fd90ab0 [diff]"
+    },
+    "metadataMessage": "wifi: cfg80211: fix u8 overflow in cfg80211_update_notlisted_nontrans()\n\ncommit aebe9f4639b13a1f4e9a6b42cdd2e38c617b442d upstream.\n\nIn the copy code of the elements, we do the following calculation\nto reach the end of the MBSSID element:\n\n\t/* copy the IEs after MBSSID */\n\tcpy_len = mbssid[1] + 2;\n\nThis looks fine, however, cpy_len is a u8, the same as mbssid[1],\nso the addition of two can overflow. In this case the subsequent\nmemcpy() will overflow the allocated buffer, since it copies 256\nbytes too much due to the way the allocation and memcpy() sizes\nare calculated.\n\nFix this by using size_t for the cpy_len variable.\n\nThis fixes CVE-2022-41674.\n\nReported-by: Soenke Huster <shuster@seemoo.tu-darmstadt.de>\nTested-by: Soenke Huster <shuster@seemoo.tu-darmstadt.de>\nFixes: 0b8fb8235be8 (\"cfg80211: Parsing of Multiple BSSID information in scanning\")\nReviewed-by: Kees Cook <keescook@chromium.org>\nSigned-off-by: Johannes Berg <johannes.berg@intel.com>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/net/wireless/scan.c b/net/wireless/scan.c\nindex 1a8b76c..d9ab37a 100644\n--- a/net/wireless/scan.c\n+++ b/net/wireless/scan.c",
+          "files": [
+            "/kernel/common/+/398e30b67092a527e9df09b8e70e41b42fd90ab0/net/wireless/scan.c",
+            "/kernel/common/+/9a8ef2030510a9d6ce86fd535b8d10720230811f/net/wireless/scan.c"
+          ]
+        },
+        "diffUnified": "@@ -2238,7 +2238,7 @@\n \tsize_t new_ie_len;\n \tstruct cfg80211_bss_ies *new_ies;\n \tconst struct cfg80211_bss_ies *old;\n-\tu8 cpy_len;\n+\tsize_t cpy_len;\n \n \tlockdep_assert_held(&wiphy_to_rdev(wiphy)->bss_lock);"
+      }
+    ]
+  },
+  "Type": "RCE",
+  "Severity": "Critical",
+  "Subcomponent": "WLAN"
+},
+{
+  "_id": {
+    "$oid": "65e013969be6383e79403de3"
+  },
+  "CVE": "CVE-2023-20937",
+  "References": {
+    "text": "A-257443051\n     Upstream kernel\n     [2]\n     [3]\n     [4]\n     [5]\n     [6]\n     [7]",
+    "link": "https://android.googlesource.com/kernel/common/+/50d2b75b860a6495aac6127a27f75b309e91b689",
+    "metaData": {
+      "commit": "50d2b75b860a6495aac6127a27f75b309e91b689",
+      "author": "Suren Baghdasaryan <surenb@google.com>",
+      "committer": "Suren Baghdasaryan <surenb@google.com>",
+      "tree": "60fcd1c4400b23562aecca3db7c6bf1acb48ad90",
+      "parent": "5844c8e7aaa946341f0d30441adc8f2cd97efbfc [diff]"
+    },
+    "metadataMessage": "ANDROID: mm: preserve vma->anon_vma after MREMAP_DONTUNMAP for SPF\n\nThe optimizations [1] and [2] to reset vma->anon_vma during\nMREMAP_DONTUNMAP can affect speculative page fault handler. If\nvma->anon_vma reset happens after do_anonymous_page verified no\nchanges to the vma and obtained the ptl lock but before it calls\npage_add_new_anon_rmap() then __page_set_anon_rmap() will stumble\non BUG_ON(!anon_vma). Disable these optimizations if SPF is enabled\nto avoid such situations. As a result the reverse map walk will\nconsider the old VMA as it did before these optimizations were\nintroduced.\n\n[1] 1583aa278f5f (\"mm: mremap: unlink anon_vmas when mremap with MREMAP_DONTUNMAP success\")\n[2] ee8ab1903e3d (\"mm: rmap: explicitly reset vma->anon_vma in unlink_anon_vmas()\")\n\nBug: 257443051\nChange-Id: I4e7611137f4a49c94bfe73532b4b06cbb0d2405b\nSigned-off-by: Suren Baghdasaryan <surenb@google.com>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/mm/mremap.c b/mm/mremap.c\nindex a46c810..6c87fc8 100644\n--- a/mm/mremap.c\n+++ b/mm/mremap.c",
+          "files": [
+            "/kernel/common/+/5844c8e7aaa946341f0d30441adc8f2cd97efbfc/mm/mremap.c",
+            "/kernel/common/+/50d2b75b860a6495aac6127a27f75b309e91b689/mm/mremap.c"
+          ]
+        },
+        "diffUnified": "@@ -683,6 +683,7 @@\n \t\t/* We always clear VM_LOCKED[ONFAULT] on the old vma */\n \t\tvma->vm_flags &= VM_LOCKED_CLEAR_MASK;\n \n+#ifndef CONFIG_SPECULATIVE_PAGE_FAULT\n \t\t/*\n \t\t * anon_vma links of the old vma is no longer needed after its page\n \t\t * table has been moved.\n@@ -690,6 +691,7 @@\n \t\tif (new_vma != vma && vma->vm_start == old_addr &&\n \t\t\tvma->vm_end == (old_addr + old_len))\n \t\t\tunlink_anon_vmas(vma);\n+#endif\n \n \t\t/* Because we won't unmap we don't need to touch locked_vm */\n \t\treturn new_addr;"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/mm/rmap.c b/mm/rmap.c\nindex 440085a..df89881c 100644\n--- a/mm/rmap.c\n+++ b/mm/rmap.c",
+          "files": [
+            "/kernel/common/+/5844c8e7aaa946341f0d30441adc8f2cd97efbfc/mm/rmap.c",
+            "/kernel/common/+/50d2b75b860a6495aac6127a27f75b309e91b689/mm/rmap.c"
+          ]
+        },
+        "diffUnified": "@@ -422,11 +422,13 @@\n \tif (vma->anon_vma) {\n \t\tvma->anon_vma->num_active_vmas--;\n \n+#ifndef CONFIG_SPECULATIVE_PAGE_FAULT\n \t\t/*\n \t\t * vma would still be needed after unlink, and anon_vma will be prepared\n \t\t * when handle fault.\n \t\t */\n \t\tvma->anon_vma = NULL;\n+#endif\n \t}\n \tunlock_anon_vma_root(root);"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "Memory Management"
+},
+{
+  "_id": {
+    "$oid": "65e013969be6383e79403de4"
+  },
+  "CVE": "CVE-2022-39189",
+  "References": {
+    "text": "A-245869446\n     Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/0be362f248a062b0c57b24bd16250e48aca1258b",
+    "metaData": {
+      "commit": "0be362f248a062b0c57b24bd16250e48aca1258b",
+      "author": "Paolo Bonzini <pbonzini@redhat.com>",
+      "committer": "Treehugger Robot <treehugger-gerrit@google.com>",
+      "tree": "a69880b07da2ad273deb22bb5bd7e2f3c9d5b03e",
+      "parent": "50358d672991fce15dc0b493a126597fa23243ff [diff]"
+    },
+    "metadataMessage": "UPSTREAM: KVM: x86: do not report a vCPU as preempted outside instruction boundaries\n\n[ Upstream commit 6cd88243c7e03845a450795e134b488fc2afb736 ]\n\nIf a vCPU is outside guest mode and is scheduled out, it might be in the\nprocess of making a memory access.  A problem occurs if another vCPU uses\nthe PV TLB flush feature during the period when the vCPU is scheduled\nout, and a virtual address has already been translated but has not yet\nbeen accessed, because this is equivalent to using a stale TLB entry.\n\nTo avoid this, only report a vCPU as preempted if sure that the guest\nis at an instruction boundary.  A rescheduling request will be delivered\nto the host physical CPU as an external interrupt, so for simplicity\nconsider any vmexit *not* instruction boundary except for external\ninterrupts.\n\nIt would in principle be okay to report the vCPU as preempted also\nif it is sleeping in kvm_vcpu_block(): a TLB flush IPI will incur the\nvmentry/vmexit overhead unnecessarily, and optimistic spinning is\nalso unlikely to succeed.  However, leave it for later because right\nnow kvm_vcpu_check_block() is doing memory accesses.  Even\nthough the TLB flush issue only applies to virtual memory address,\nit's very much preferrable to be conservative.\n\nBug: 245869446\nReported-by: Jann Horn <jannh@google.com>\nSigned-off-by: Paolo Bonzini <pbonzini@redhat.com>\nSigned-off-by: Sasha Levin <sashal@kernel.org>\nSigned-off-by: Lee Jones <joneslee@google.com>\nChange-Id: Ia3adaa1bb927327eee0acc062dff0fe7d82c23b3",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h\nindex 49d814b..a35f5e2 100644\n--- a/arch/x86/include/asm/kvm_host.h\n+++ b/arch/x86/include/asm/kvm_host.h",
+          "files": [
+            "/kernel/common/+/50358d672991fce15dc0b493a126597fa23243ff/arch/x86/include/asm/kvm_host.h",
+            "/kernel/common/+/0be362f248a062b0c57b24bd16250e48aca1258b/arch/x86/include/asm/kvm_host.h"
+          ]
+        },
+        "diffUnified": "@@ -642,6 +642,7 @@\n \tu64 ia32_misc_enable_msr;\n \tu64 smbase;\n \tu64 smi_count;\n+\tbool at_instruction_boundary;\n \tbool tpr_access_reporting;\n \tbool xsaves_enabled;\n \tu64 ia32_xss;\n@@ -1271,6 +1272,8 @@\n \tu64 nested_run;\n \tu64 directed_yield_attempted;\n \tu64 directed_yield_successful;\n+\tu64 preemption_reported;\n+\tu64 preemption_other;\n \tu64 guest_mode;\n };"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c\nindex 26f2da1..5b51156 100644\n--- a/arch/x86/kvm/svm/svm.c\n+++ b/arch/x86/kvm/svm/svm.c",
+          "files": [
+            "/kernel/common/+/50358d672991fce15dc0b493a126597fa23243ff/arch/x86/kvm/svm/svm.c",
+            "/kernel/common/+/0be362f248a062b0c57b24bd16250e48aca1258b/arch/x86/kvm/svm/svm.c"
+          ]
+        },
+        "diffUnified": "@@ -4263,6 +4263,8 @@\n \n static void svm_handle_exit_irqoff(struct kvm_vcpu *vcpu)\n {\n+\tif (to_svm(vcpu)->vmcb->control.exit_code == SVM_EXIT_INTR)\n+\t\tvcpu->arch.at_instruction_boundary = true;\n }\n \n static void svm_sched_in(struct kvm_vcpu *vcpu, int cpu)"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c\nindex 16a660a..08f9f05 100644\n--- a/arch/x86/kvm/vmx/vmx.c\n+++ b/arch/x86/kvm/vmx/vmx.c",
+          "files": [
+            "/kernel/common/+/50358d672991fce15dc0b493a126597fa23243ff/arch/x86/kvm/vmx/vmx.c",
+            "/kernel/common/+/0be362f248a062b0c57b24bd16250e48aca1258b/arch/x86/kvm/vmx/vmx.c"
+          ]
+        },
+        "diffUnified": "@@ -6390,6 +6390,7 @@\n \t\treturn;\n \n \thandle_interrupt_nmi_irqoff(vcpu, gate_offset(desc));\n+\tvcpu->arch.at_instruction_boundary = true;\n }\n \n static void vmx_handle_exit_irqoff(struct kvm_vcpu *vcpu)"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c\nindex 23905ba..fbf10fa 100644\n--- a/arch/x86/kvm/x86.c\n+++ b/arch/x86/kvm/x86.c",
+          "files": [
+            "/kernel/common/+/50358d672991fce15dc0b493a126597fa23243ff/arch/x86/kvm/x86.c",
+            "/kernel/common/+/0be362f248a062b0c57b24bd16250e48aca1258b/arch/x86/kvm/x86.c"
+          ]
+        },
+        "diffUnified": "@@ -277,6 +277,8 @@\n \tSTATS_DESC_COUNTER(VCPU, nested_run),\n \tSTATS_DESC_COUNTER(VCPU, directed_yield_attempted),\n \tSTATS_DESC_COUNTER(VCPU, directed_yield_successful),\n+\tSTATS_DESC_COUNTER(VCPU, preemption_reported),\n+\tSTATS_DESC_COUNTER(VCPU, preemption_other),\n \tSTATS_DESC_ICOUNTER(VCPU, guest_mode)\n };\n \n@@ -4368,6 +4370,19 @@\n \tstruct kvm_memslots *slots;\n \tstatic const u8 preempted = KVM_VCPU_PREEMPTED;\n \n+\t/*\n+\t * The vCPU can be marked preempted if and only if the VM-Exit was on\n+\t * an instruction boundary and will not trigger guest emulation of any\n+\t * kind (see vcpu_run).  Vendor specific code controls (conservatively)\n+\t * when this is true, for example allowing the vCPU to be marked\n+\t * preempted if and only if the VM-Exit was due to a host interrupt.\n+\t */\n+\tif (!vcpu->arch.at_instruction_boundary) {\n+\t\tvcpu->stat.preemption_other++;\n+\t\treturn;\n+\t}\n+\n+\tvcpu->stat.preemption_reported++;\n \tif (!(vcpu->arch.st.msr_val & KVM_MSR_ENABLED))\n \t\treturn;\n \n@@ -9936,6 +9951,13 @@\n \tvcpu->arch.l1tf_flush_l1d = true;\n \n \tfor (;;) {\n+\t\t/*\n+\t\t * If another guest vCPU requests a PV TLB flush in the middle\n+\t\t * of instruction emulation, the rest of the emulation could\n+\t\t * use a stale page translation. Assume that any code after\n+\t\t * this point can start executing an instruction.\n+\t\t */\n+\t\tvcpu->arch.at_instruction_boundary = false;\n \t\tif (kvm_vcpu_running(vcpu)) {\n \t\t\tr = vcpu_enter_guest(vcpu);\n \t\t} else {"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "KVM"
+},
+{
+  "_id": {
+    "$oid": "65e013969be6383e79403de5"
+  },
+  "CVE": "CVE-2023-20938",
+  "References": {
+    "text": "A-257685302\n     Upstream kernel\n     [2]\n     [3]\n     [4]\n     [5]\n     [6]",
+    "link": "https://android.googlesource.com/kernel/common/+/baa23246e93f",
+    "metaData": {
+      "commit": "baa23246e93ffa94d05c5702355a3fafa81efeac",
+      "author": "Alessandro Astone <ales.astone@gmail.com>",
+      "committer": "Treehugger Robot <treehugger-gerrit@google.com>",
+      "tree": "0a05e5384b53de96dbaf12fd5a2f453bd458c269",
+      "parent": "3d213a626d2d94a41e06e85eeb23fe623e10bc63 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: binder: Gracefully handle BINDER_TYPE_FDA objects with num_fds=0\n\nSome android userspace is sending BINDER_TYPE_FDA objects with\nnum_fds=0. Like the previous patch, this is reproducible when\nplaying a video.\n\nBefore commit 09184ae9b575 BINDER_TYPE_FDA objects with num_fds=0\nwere 'correctly handled', as in no fixup was performed.\n\nAfter commit 09184ae9b575 we aggregate fixup and skip regions in\nbinder_ptr_fixup structs and distinguish between the two by using\nthe skip_size field: if it's 0, then it's a fixup, otherwise skip.\nWhen processing BINDER_TYPE_FDA objects with num_fds=0 we add a\nskip region of skip_size=0, and this causes issues because now\nbinder_do_deferred_txn_copies will think this was a fixup region.\n\nTo address that, return early from binder_translate_fd_array to\navoid adding an empty skip region.\n\nFixes: 09184ae9b575 (\"binder: defer copies of pre-patched txn data\")\nAcked-by: Todd Kjos <tkjos@google.com>\nCc: stable <stable@kernel.org>\nSigned-off-by: Alessandro Astone <ales.astone@gmail.com>\nLink: https://lore.kernel.org/r/20220415120015.52684-1-ales.astone@gmail.com\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\n\nBug: 257685302\n(cherry picked from commit ef38de9217a04c9077629a24652689d8fdb4c6c6)\nChange-Id: I34fab41c0c1beee366a5df4724b263e4385ad13b\nSigned-off-by: Carlos Llamas <cmllamas@google.com>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/android/binder.c b/drivers/android/binder.c\nindex bce74df..f0d8989 100644\n--- a/drivers/android/binder.c\n+++ b/drivers/android/binder.c",
+          "files": [
+            "/kernel/common/+/3d213a626d2d94a41e06e85eeb23fe623e10bc63/drivers/android/binder.c",
+            "/kernel/common/+/baa23246e93ffa94d05c5702355a3fafa81efeac/drivers/android/binder.c"
+          ]
+        },
+        "diffUnified": "@@ -2696,6 +2696,9 @@\n \tstruct binder_proc *proc = thread->proc;\n \tint ret;\n \n+\tif (fda->num_fds == 0)\n+\t\treturn 0;\n+\n \tfd_buf_size = sizeof(u32) * fda->num_fds;\n \tif (fda->num_fds >= SIZE_MAX / sizeof(u32)) {\n \t\tbinder_user_error(\"%d:%d got transaction with invalid number of fds (%lld)\\n\","
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "Binder"
+},
+{
+  "_id": {
+    "$oid": "65e013969be6383e79403de6"
+  },
+  "CVE": "CVE-2022-41222",
+  "References": {
+    "text": "A-248354871\n     Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/482efd771f45b37a7da107bd8289b52164574aaa",
+    "metaData": {
+      "commit": "482efd771f45b37a7da107bd8289b52164574aaa",
+      "author": "Aneesh Kumar K.V <aneesh.kumar@linux.ibm.com>",
+      "committer": "Lee Jones <joneslee@google.com>",
+      "tree": "6cdc3640540d9dc6e1906aa50b9d8db6e4e58676",
+      "parent": "c262d21607de3b3b500a84f97462ca821cea7b08 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: mm/mremap: hold the rmap lock in write mode when moving page table entries.\n\ncommit 97113eb39fa7972722ff490b947d8af023e1f6a2 upstream.\n\nTo avoid a race between rmap walk and mremap, mremap does\ntake_rmap_locks().  The lock was taken to ensure that rmap walk don't miss\na page table entry due to PTE moves via move_pagetables().  The kernel\ndoes further optimization of this lock such that if we are going to find\nthe newly added vma after the old vma, the rmap lock is not taken.  This\nis because rmap walk would find the vmas in the same order and if we don't\nfind the page table attached to older vma we would find it with the new\nvma which we would iterate later.\n\nAs explained in commit eb66ae030829 (\"mremap: properly flush TLB before\nreleasing the page\") mremap is special in that it doesn't take ownership\nof the page.  The optimized version for PUD/PMD aligned mremap also\ndoesn't hold the ptl lock.  This can result in stale TLB entries as show\nbelow.\n\nThis patch updates the rmap locking requirement in mremap to handle the race condition\nexplained below with optimized mremap::\n\nOptmized PMD move\n\n    CPU 1                           CPU 2                                   CPU 3\n\n    mremap(old_addr, new_addr)      page_shrinker/try_to_unmap_one\n\n    mmap_write_lock_killable()\n\n                                    addr = old_addr\n                                    lock(pte_ptl)\n    lock(pmd_ptl)\n    pmd = *old_pmd\n    pmd_clear(old_pmd)\n    flush_tlb_range(old_addr)\n\n    *new_pmd = pmd\n                                                                            *new_addr = 10; and fills\n                                                                            TLB with new addr\n                                                                            and old pfn\n\n    unlock(pmd_ptl)\n                                    ptep_clear_flush()\n                                    old pfn is free.\n                                                                            Stale TLB entry\n\nOptimized PUD move also suffers from a similar race.  Both the above race\ncondition can be fixed if we force mremap path to take rmap lock.\n\nBug: 248354871\nLink: https://lkml.kernel.org/r/20210616045239.370802-7-aneesh.kumar@linux.ibm.com\nFixes: 2c91bd4a4e2e (\"mm: speed up mremap by 20x on large regions\")\nFixes: c49dd3401802 (\"mm: speedup mremap on 1GB or larger regions\")\nLink: https://lore.kernel.org/linux-mm/CAHk-=wgXVR04eBNtxQfevontWnP6FDm+oj5vauQXP3S-huwbPw@mail.gmail.com\nSigned-off-by: Aneesh Kumar K.V <aneesh.kumar@linux.ibm.com>\nAcked-by: Hugh Dickins <hughd@google.com>\nAcked-by: Kirill A. Shutemov <kirill.shutemov@linux.intel.com>\nCc: Christophe Leroy <christophe.leroy@csgroup.eu>\nCc: Joel Fernandes <joel@joelfernandes.org>\nCc: Kalesh Singh <kaleshsingh@google.com>\nCc: Kirill A. Shutemov <kirill@shutemov.name>\nCc: Michael Ellerman <mpe@ellerman.id.au>\nCc: Nicholas Piggin <npiggin@gmail.com>\nCc: Stephen Rothwell <sfr@canb.auug.org.au>\nCc: <stable@vger.kernel.org>\nSigned-off-by: Andrew Morton <akpm@linux-foundation.org>\nSigned-off-by: Linus Torvalds <torvalds@linux-foundation.org>\n[patch rewritten for backport since the code was refactored since]\nSigned-off-by: Jann Horn <jannh@google.com>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\nSigned-off-by: Lee Jones <joneslee@google.com>\nChange-Id: I046ea082f78b4c35c364dca305953a3f9ed28f1d",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/mm/mremap.c b/mm/mremap.c\nindex 8ce1b76..f6b8c00 100644\n--- a/mm/mremap.c\n+++ b/mm/mremap.c",
+          "files": [
+            "/kernel/common/+/c262d21607de3b3b500a84f97462ca821cea7b08/mm/mremap.c",
+            "/kernel/common/+/482efd771f45b37a7da107bd8289b52164574aaa/mm/mremap.c"
+          ]
+        },
+        "diffUnified": "@@ -293,12 +293,10 @@\n \t\t\t */\n \t\t\tbool moved;\n \n-\t\t\tif (need_rmap_locks)\n-\t\t\t\ttake_rmap_locks(vma);\n+\t\t\ttake_rmap_locks(vma);\n \t\t\tmoved = move_normal_pmd(vma, old_addr, new_addr,\n \t\t\t\t\told_end, old_pmd, new_pmd);\n-\t\t\tif (need_rmap_locks)\n-\t\t\t\tdrop_rmap_locks(vma);\n+\t\t\tdrop_rmap_locks(vma);\n \t\t\tif (moved)\n \t\t\t\tcontinue;\n #endif"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "Kernel memory subsystem"
+},
+{
+  "_id": {
+    "$oid": "65e013969be6383e79403de7"
+  },
+  "CVE": "CVE-2022-39842",
+  "References": {
+    "text": "A-245928838\n     Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/d75ef462c3dbd5bb52313e32d545c8be7f79049d",
+    "metaData": {
+      "commit": "d75ef462c3dbd5bb52313e32d545c8be7f79049d",
+      "author": "Hyunwoo Kim <imv4bel@gmail.com>",
+      "committer": "Treehugger Robot <treehugger-gerrit@google.com>",
+      "tree": "22fc30d2a7ea314ff6fe49509c8adc321f84a4c5",
+      "parent": "777857c7a1cfd93a926b73b47e3a911de1d44414 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: video: fbdev: pxa3xx-gcu: Fix integer overflow in pxa3xx_gcu_write\n\n[ Upstream commit a09d2d00af53b43c6f11e6ab3cb58443c2cac8a7 ]\n\nIn pxa3xx_gcu_write, a count parameter of type size_t is passed to words of\ntype int.  Then, copy_from_user() may cause a heap overflow because it is used\nas the third argument of copy_from_user().\n\nBug: 245928838\nSigned-off-by: Hyunwoo Kim <imv4bel@gmail.com>\nSigned-off-by: Helge Deller <deller@gmx.de>\nSigned-off-by: Sasha Levin <sashal@kernel.org>\nSigned-off-by: Lee Jones <joneslee@google.com>\nChange-Id: I9e21917a52e2cb78cc640a77a6eba21838aa8655",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/video/fbdev/pxa3xx-gcu.c b/drivers/video/fbdev/pxa3xx-gcu.c\nindex 4279e13..3f23064 100644\n--- a/drivers/video/fbdev/pxa3xx-gcu.c\n+++ b/drivers/video/fbdev/pxa3xx-gcu.c",
+          "files": [
+            "/kernel/common/+/777857c7a1cfd93a926b73b47e3a911de1d44414/drivers/video/fbdev/pxa3xx-gcu.c",
+            "/kernel/common/+/d75ef462c3dbd5bb52313e32d545c8be7f79049d/drivers/video/fbdev/pxa3xx-gcu.c"
+          ]
+        },
+        "diffUnified": "@@ -381,7 +381,7 @@\n \tstruct pxa3xx_gcu_batch\t*buffer;\n \tstruct pxa3xx_gcu_priv *priv = to_pxa3xx_gcu_priv(file);\n \n-\tint words = count / 4;\n+\tsize_t words = count / 4;\n \n \t/* Does not need to be atomic. There's a lock in user space,\n \t * but anyhow, this is just for statistics. */"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "Video"
+},
+{
+  "_id": {
+    "$oid": "65e013969be6383e79403de8"
+  },
+  "CVE": "CVE-2022-0850",
+  "References": {
+    "text": "A-245406696\n     Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/ce3aba43599f0",
+    "metaData": {
+      "commit": "ce3aba43599f0b50adbebff133df8d08a3d5fffe",
+      "author": "Anirudh Rayabharam <mail@anirudhrb.com>",
+      "committer": "Theodore Ts'o <tytso@mit.edu>",
+      "tree": "be466ea324adc1db0512031e2282c6551a2f7850",
+      "parent": "618f003199c6188e01472b03cdbba227f1dc5f24 [diff]"
+    },
+    "metadataMessage": "ext4: fix kernel infoleak via ext4_extent_header\n\nInitialize eh_generation of struct ext4_extent_header to prevent leaking\ninfo to userspace. Fixes KMSAN kernel-infoleak bug reported by syzbot at:\nhttp://syzkaller.appspot.com/bug?id=78e9ad0e6952a3ca16e8234724b2fa92d041b9b8\n\nCc: stable@kernel.org\nReported-by: syzbot+2dcfeaf8cb49b05e8f1a@syzkaller.appspotmail.com\nFixes: a86c61812637 (\"[PATCH] ext3: add extent map support\")\nSigned-off-by: Anirudh Rayabharam <mail@anirudhrb.com>\nLink: https://lore.kernel.org/r/20210506185655.7118-1-mail@anirudhrb.com\nSigned-off-by: Theodore Ts'o <tytso@mit.edu>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/fs/ext4/extents.c b/fs/ext4/extents.c\nindex cbf37b2..1293de5 100644\n--- a/fs/ext4/extents.c\n+++ b/fs/ext4/extents.c",
+          "files": [
+            "/kernel/common/+/618f003199c6188e01472b03cdbba227f1dc5f24/fs/ext4/extents.c",
+            "/kernel/common/+/ce3aba43599f0b50adbebff133df8d08a3d5fffe/fs/ext4/extents.c"
+          ]
+        },
+        "diffUnified": "@@ -825,6 +825,7 @@\n \teh->eh_entries = 0;\n \teh->eh_magic = EXT4_EXT_MAGIC;\n \teh->eh_max = cpu_to_le16(ext4_ext_space_root(inode, 0));\n+\teh->eh_generation = 0;\n \text4_mark_inode_dirty(handle, inode);\n }\n \n@@ -1090,6 +1091,7 @@\n \tneh->eh_max = cpu_to_le16(ext4_ext_space_block(inode, 0));\n \tneh->eh_magic = EXT4_EXT_MAGIC;\n \tneh->eh_depth = 0;\n+\tneh->eh_generation = 0;\n \n \t/* move remainder of path[depth] to the new leaf */\n \tif (unlikely(path[depth].p_hdr->eh_entries !=\n@@ -1167,6 +1169,7 @@\n \t\tneh->eh_magic = EXT4_EXT_MAGIC;\n \t\tneh->eh_max = cpu_to_le16(ext4_ext_space_block_idx(inode, 0));\n \t\tneh->eh_depth = cpu_to_le16(depth - i);\n+\t\tneh->eh_generation = 0;\n \t\tfidx = EXT_FIRST_INDEX(neh);\n \t\tfidx->ei_block = border;\n \t\text4_idx_store_pblock(fidx, oldblock);"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Subcomponent": "ext4"
+},
+{
+  "_id": {
+    "$oid": "65e013e2d16473032b7dedea"
+  },
+  "CVE": "CVE-2023-20621",
+  "References": {
+    "text": "A-264208866\n     M-ALPS07664755*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "tinysys"
+},
+{
+  "_id": {
+    "$oid": "65e013e2d16473032b7dedeb"
+  },
+  "CVE": "CVE-2023-20623",
+  "References": {
+    "text": "A-264209787\n     M-ALPS07559778\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "ion"
+},
+{
+  "_id": {
+    "$oid": "65e013e2d16473032b7dedec"
+  },
+  "CVE": "CVE-2023-20620",
+  "References": {
+    "text": "A-264149248\n     M-ALPS07554558\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "adsp"
+},
+{
+  "_id": {
+    "$oid": "65e01420891805344f7fc646"
+  },
+  "CVE": "CVE-2022-42716",
+  "References": {
+    "text": "A-260148146*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Mali"
+},
+{
+  "_id": {
+    "$oid": "65e01420891805344f7fc649"
+  },
+  "CVE": "CVE-2022-36449",
+  "References": {
+    "text": "A-259983537*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Mali"
+},
+{
+  "_id": {
+    "$oid": "65e01420891805344f7fc647"
+  },
+  "CVE": "CVE-2022-38181",
+  "References": {
+    "text": "A-259695958*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Mali"
+},
+{
+  "_id": {
+    "$oid": "65e01420891805344f7fc648"
+  },
+  "CVE": "CVE-2022-33917",
+  "References": {
+    "text": "A-259984559*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Mali"
+},
+{
+  "_id": {
+    "$oid": "65e01421891805344f7fc64a"
+  },
+  "CVE": "CVE-2022-41757",
+  "References": {
+    "text": "A-254445909*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Mali"
+},
+{
+  "_id": {
+    "$oid": "65e0144448e0893bec981dfb"
+  },
+  "CVE": "CVE-2023-21102",
+  "References": {
+    "text": "A-260821414\n     Upstream kernel\n     [2]",
+    "link": "https://android.googlesource.com/kernel/common/+/ec6fe823507b2f6ef4a58f3a9bee9a5ec086c32c",
+    "metaData": {
+      "commit": "ec6fe823507b2f6ef4a58f3a9bee9a5ec086c32c",
+      "author": "Ard Biesheuvel <ardb@kernel.org>",
+      "committer": "Lee Jones <joneslee@google.com>",
+      "tree": "d9ae911b67292aa62b94b75b63103ddc527091a3",
+      "parent": "003dacfcee549e931ca9b44673c72db3490a2efc [diff]"
+    },
+    "metadataMessage": "UPSTREAM: arm64: efi: Execute runtime services from a dedicated stack\n\ncommit ff7a167961d1b97e0e205f245f806e564d3505e7 upstream.\n\nWith the introduction of PRMT in the ACPI subsystem, the EFI rts\nworkqueue is no longer the only caller of efi_call_virt_pointer() in the\nkernel. This means the EFI runtime services lock is no longer sufficient\nto manage concurrent calls into firmware, but also that firmware calls\nmay occur that are not marshalled via the workqueue mechanism, but\noriginate directly from the caller context.\n\nFor added robustness, and to ensure that the runtime services have 8 KiB\nof stack space available as per the EFI spec, introduce a spinlock\nprotected EFI runtime stack of 8 KiB, where the spinlock also ensures\nserialization between the EFI rts workqueue (which itself serializes EFI\nruntime calls) and other callers of efi_call_virt_pointer().\n\nWhile at it, use the stack pivot to avoid reloading the shadow call\nstack pointer from the ordinary stack, as doing so could produce a\ngadget to defeat it.\n\nBug: 260821414\nSigned-off-by: Ard Biesheuvel <ardb@kernel.org>\nCc: Lee Jones <lee@kernel.org>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\nSigned-off-by: Lee Jones <joneslee@google.com>\nChange-Id: Ie961576ae93cafc315cb37fb84cca0a6402eda59",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/arch/arm64/include/asm/efi.h b/arch/arm64/include/asm/efi.h\nindex ad55079..c5d4551 100644\n--- a/arch/arm64/include/asm/efi.h\n+++ b/arch/arm64/include/asm/efi.h",
+          "files": [
+            "/kernel/common/+/003dacfcee549e931ca9b44673c72db3490a2efc/arch/arm64/include/asm/efi.h",
+            "/kernel/common/+/ec6fe823507b2f6ef4a58f3a9bee9a5ec086c32c/arch/arm64/include/asm/efi.h"
+          ]
+        },
+        "diffUnified": "@@ -25,6 +25,7 @@\n ({\t\t\t\t\t\t\t\t\t\\\n \tefi_virtmap_load();\t\t\t\t\t\t\\\n \t__efi_fpsimd_begin();\t\t\t\t\t\t\\\n+\tspin_lock(&efi_rt_lock);\t\t\t\t\t\\\n })\n \n #define arch_efi_call_virt(p, f, args...)\t\t\t\t\\\n@@ -36,10 +37,12 @@\n \n #define arch_efi_call_virt_teardown()\t\t\t\t\t\\\n ({\t\t\t\t\t\t\t\t\t\\\n+\tspin_unlock(&efi_rt_lock);\t\t\t\t\t\\\n \t__efi_fpsimd_end();\t\t\t\t\t\t\\\n \tefi_virtmap_unload();\t\t\t\t\t\t\\\n })\n \n+extern spinlock_t efi_rt_lock;\n efi_status_t __efi_rt_asm_wrapper(void *, const char *, ...);\n \n #define ARCH_EFI_IRQ_FLAGS_MASK (PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT)"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/arch/arm64/kernel/efi-rt-wrapper.S b/arch/arm64/kernel/efi-rt-wrapper.S\nindex 75691a26..b2786b9 100644\n--- a/arch/arm64/kernel/efi-rt-wrapper.S\n+++ b/arch/arm64/kernel/efi-rt-wrapper.S",
+          "files": [
+            "/kernel/common/+/003dacfcee549e931ca9b44673c72db3490a2efc/arch/arm64/kernel/efi-rt-wrapper.S",
+            "/kernel/common/+/ec6fe823507b2f6ef4a58f3a9bee9a5ec086c32c/arch/arm64/kernel/efi-rt-wrapper.S"
+          ]
+        },
+        "diffUnified": "@@ -16,6 +16,12 @@\n \t */\n \tstp\tx1, x18, [sp, #16]\n \n+\tldr_l\tx16, efi_rt_stack_top\n+\tmov\tsp, x16\n+#ifdef CONFIG_SHADOW_CALL_STACK\n+\tstr\tx18, [sp, #-16]!\n+#endif\n+\n \t/*\n \t * We are lucky enough that no EFI runtime services take more than\n \t * 5 arguments, so all are passed in registers rather than via the\n@@ -29,6 +35,7 @@\n \tmov\tx4, x6\n \tblr\tx8\n \n+\tmov\tsp, x29\n \tldp\tx1, x2, [sp, #16]\n \tcmp\tx2, x18\n \tldp\tx29, x30, [sp], #32\n@@ -42,6 +49,10 @@\n \t * called with preemption disabled and a separate shadow stack is used\n \t * for interrupts.\n \t */\n-\tmov\tx18, x2\n+#ifdef CONFIG_SHADOW_CALL_STACK\n+\tldr_l\tx18, efi_rt_stack_top\n+\tldr\tx18, [x18, #-16]\n+#endif\n+\n \tb\tefi_handle_corrupted_x18\t// tail call\n SYM_FUNC_END(__efi_rt_asm_wrapper)"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/arch/arm64/kernel/efi.c b/arch/arm64/kernel/efi.c\nindex e1be6c4..da4201a 100644\n--- a/arch/arm64/kernel/efi.c\n+++ b/arch/arm64/kernel/efi.c",
+          "files": [
+            "/kernel/common/+/003dacfcee549e931ca9b44673c72db3490a2efc/arch/arm64/kernel/efi.c",
+            "/kernel/common/+/ec6fe823507b2f6ef4a58f3a9bee9a5ec086c32c/arch/arm64/kernel/efi.c"
+          ]
+        },
+        "diffUnified": "@@ -128,3 +128,30 @@\n \tpr_err_ratelimited(FW_BUG \"register x18 corrupted by EFI %s\\n\", f);\n \treturn s;\n }\n+\n+DEFINE_SPINLOCK(efi_rt_lock);\n+\n+asmlinkage u64 *efi_rt_stack_top __ro_after_init;\n+\n+/* EFI requires 8 KiB of stack space for runtime services */\n+static_assert(THREAD_SIZE >= SZ_8K);\n+\n+static int __init arm64_efi_rt_init(void)\n+{\n+\tvoid *p;\n+\n+\tif (!efi_enabled(EFI_RUNTIME_SERVICES))\n+\t\treturn 0;\n+\n+\tp = __vmalloc_node(THREAD_SIZE, THREAD_ALIGN, GFP_KERNEL,\n+\t\t\t   NUMA_NO_NODE, &&l);\n+l:\tif (!p) {\n+\t\tpr_warn(\"Failed to allocate EFI runtime stack\\n\");\n+\t\tclear_bit(EFI_RUNTIME_SERVICES, &efi.flags);\n+\t\treturn -ENOMEM;\n+\t}\n+\n+\tefi_rt_stack_top = p + THREAD_SIZE;\n+\treturn 0;\n+}\n+core_initcall(arm64_efi_rt_init);"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "EFI"
+},
+{
+  "_id": {
+    "$oid": "65e0144448e0893bec981dfc"
+  },
+  "CVE": "CVE-2023-21106",
+  "References": {
+    "text": "A-265016072\n     Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/8103d53f25ec7",
+    "metaData": {
+      "commit": "8103d53f25ec7b9aa99c134642c6e840e896be71",
+      "author": "Rob Clark <robdclark@chromium.org>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "1d1fa6a12fcf3722a31a446e4275bbee5b2042b8",
+      "parent": "ba4ca7d2dd85bf46ca22c89209ad1093517acb8f [diff]"
+    },
+    "metadataMessage": "drm/msm/gpu: Fix potential double-free\n\n[ Upstream commit a66f1efcf748febea7758c4c3c8b5bc5294949ef ]\n\nIf userspace was calling the MSM_SET_PARAM ioctl on multiple threads to\nset the COMM or CMDLINE param, it could trigger a race causing the\nprevious value to be kfree'd multiple times.  Fix this by serializing on\nthe gpu lock.\n\nSigned-off-by: Rob Clark <robdclark@chromium.org>\nFixes: d4726d770068 (\"drm/msm: Add a way to override processes comm/cmdline\")\nPatchwork: https://patchwork.freedesktop.org/patch/517778/\nLink: https://lore.kernel.org/r/20230110212903.1925878-1-robdclark@gmail.com\nSigned-off-by: Sasha Levin <sashal@kernel.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/gpu/drm/msm/adreno/adreno_gpu.c b/drivers/gpu/drm/msm/adreno/adreno_gpu.c\nindex 5a0e849..2e7531d 100644\n--- a/drivers/gpu/drm/msm/adreno/adreno_gpu.c\n+++ b/drivers/gpu/drm/msm/adreno/adreno_gpu.c",
+          "files": [
+            "/kernel/common/+/ba4ca7d2dd85bf46ca22c89209ad1093517acb8f/drivers/gpu/drm/msm/adreno/adreno_gpu.c",
+            "/kernel/common/+/8103d53f25ec7b9aa99c134642c6e840e896be71/drivers/gpu/drm/msm/adreno/adreno_gpu.c"
+          ]
+        },
+        "diffUnified": "@@ -351,6 +351,8 @@\n \t\t/* Ensure string is null terminated: */\n \t\tstr[len] = '\\0';\n \n+\t\tmutex_lock(&gpu->lock);\n+\n \t\tif (param == MSM_PARAM_COMM) {\n \t\t\tparamp = &ctx->comm;\n \t\t} else {\n@@ -360,6 +362,8 @@\n \t\tkfree(*paramp);\n \t\t*paramp = str;\n \n+\t\tmutex_unlock(&gpu->lock);\n+\n \t\treturn 0;\n \t}\n \tcase MSM_PARAM_SYSPROF:"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/gpu/drm/msm/msm_gpu.c b/drivers/gpu/drm/msm/msm_gpu.c\nindex 021f4e2..4f495ee 100644\n--- a/drivers/gpu/drm/msm/msm_gpu.c\n+++ b/drivers/gpu/drm/msm/msm_gpu.c",
+          "files": [
+            "/kernel/common/+/ba4ca7d2dd85bf46ca22c89209ad1093517acb8f/drivers/gpu/drm/msm/msm_gpu.c",
+            "/kernel/common/+/8103d53f25ec7b9aa99c134642c6e840e896be71/drivers/gpu/drm/msm/msm_gpu.c"
+          ]
+        },
+        "diffUnified": "@@ -335,6 +335,8 @@\n \tstruct msm_file_private *ctx = submit->queue->ctx;\n \tstruct task_struct *task;\n \n+\tWARN_ON(!mutex_is_locked(&submit->gpu->lock));\n+\n \t/* Note that kstrdup will return NULL if argument is NULL: */\n \t*comm = kstrdup(ctx->comm, GFP_KERNEL);\n \t*cmd  = kstrdup(ctx->cmdline, GFP_KERNEL);"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/gpu/drm/msm/msm_gpu.h b/drivers/gpu/drm/msm/msm_gpu.h\nindex 58a72e6..a89bfdc 100644\n--- a/drivers/gpu/drm/msm/msm_gpu.h\n+++ b/drivers/gpu/drm/msm/msm_gpu.h",
+          "files": [
+            "/kernel/common/+/ba4ca7d2dd85bf46ca22c89209ad1093517acb8f/drivers/gpu/drm/msm/msm_gpu.h",
+            "/kernel/common/+/8103d53f25ec7b9aa99c134642c6e840e896be71/drivers/gpu/drm/msm/msm_gpu.h"
+          ]
+        },
+        "diffUnified": "@@ -366,10 +366,18 @@\n \t */\n \tint sysprof;\n \n-\t/** comm: Overridden task comm, see MSM_PARAM_COMM */\n+\t/**\n+\t * comm: Overridden task comm, see MSM_PARAM_COMM\n+\t *\n+\t * Accessed under msm_gpu::lock\n+\t */\n \tchar *comm;\n \n-\t/** cmdline: Overridden task cmdline, see MSM_PARAM_CMDLINE */\n+\t/**\n+\t * cmdline: Overridden task cmdline, see MSM_PARAM_CMDLINE\n+\t *\n+\t * Accessed under msm_gpu::lock\n+\t */\n \tchar *cmdline;\n \n \t/**"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "GPU"
+},
+{
+  "_id": {
+    "$oid": "65e01493126bb292ba3a358c"
+  },
+  "CVE": "CVE-2022-48392",
+  "References": {
+    "text": "A-278775990\n     \n     U-2193456\n     *\n     \n     U-2056224\n     *",
+    "link": "#asterisk"
+  },
+  "": "",
+  "Severity": "High",
+  "Subcomponent": "Android"
+},
+{
+  "_id": {
+    "$oid": "65e01493126bb292ba3a358f"
+  },
+  "CVE": "CVE-2022-48390",
+  "References": {
+    "text": "A-278796976\n     \n     U-2055602\n     *",
+    "link": "#asterisk"
+  },
+  "": "",
+  "Severity": "High",
+  "Subcomponent": "Android"
+},
+{
+  "_id": {
+    "$oid": "65e01493126bb292ba3a358d"
+  },
+  "CVE": "CVE-2022-48438",
+  "References": {
+    "text": "A-278801630\n     \n     U-2179935\n     *",
+    "link": "#asterisk"
+  },
+  "": "",
+  "Severity": "High",
+  "Subcomponent": "Kernel/Android"
+},
+{
+  "_id": {
+    "$oid": "65e01493126bb292ba3a358e"
+  },
+  "CVE": "CVE-2022-48391",
+  "References": {
+    "text": "A-278775987\n     \n     U-2055602\n     *",
+    "link": "#asterisk"
+  },
+  "": "",
+  "Severity": "High",
+  "Subcomponent": "Android"
+},
+{
+  "_id": {
+    "$oid": "65e014a47b918f1bc6a752a3"
+  },
+  "CVE": "CVE-2023-25012",
+  "References": {
+    "text": "A-268589017\n     Upstream kernel\n     [2]\n     [3]\n     [4]",
+    "link": "https://android.googlesource.com/kernel/common/+/2cabed5f026551685b5c652fedcb010cc1e4c22a",
+    "metaData": {
+      "commit": "2cabed5f026551685b5c652fedcb010cc1e4c22a",
+      "author": "Pietro Borrello <borrello@diag.uniroma1.it>",
+      "committer": "Treehugger Robot <treehugger-gerrit@google.com>",
+      "tree": "acefb485fdb3444640208c5888ba040469558ee2",
+      "parent": "35ff3e8cb6c4a60e819c57ed6fe93cf7e246d706 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: HID: bigben: use spinlock to protect concurrent accesses\n\n[ Upstream commit 9fefb6201c4f8dd9f58c581b2a66e5cde2895ea2 ]\n\nbigben driver has a worker that may access data concurrently.\nProct the accesses using a spinlock.\n\nBug: 268589017\nFixes: 256a90ed9e46 (\"HID: hid-bigbenff: driver for BigBen Interactive PS3OFMINIPAD gamepad\")\nSigned-off-by: Pietro Borrello <borrello@diag.uniroma1.it>\nLink: https://lore.kernel.org/r/20230125-hid-unregister-leds-v4-1-7860c5763c38@diag.uniroma1.it\nSigned-off-by: Benjamin Tissoires <benjamin.tissoires@redhat.com>\nSigned-off-by: Sasha Levin <sashal@kernel.org>\nSigned-off-by: Lee Jones <joneslee@google.com>\nChange-Id: I8b7a34cba4c79c26f3d1912c97a83820d88bd5a4",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/hid/hid-bigbenff.c b/drivers/hid/hid-bigbenff.c\nindex e8b1666..ed3d2d7 100644\n--- a/drivers/hid/hid-bigbenff.c\n+++ b/drivers/hid/hid-bigbenff.c",
+          "files": [
+            "/kernel/common/+/35ff3e8cb6c4a60e819c57ed6fe93cf7e246d706/drivers/hid/hid-bigbenff.c",
+            "/kernel/common/+/2cabed5f026551685b5c652fedcb010cc1e4c22a/drivers/hid/hid-bigbenff.c"
+          ]
+        },
+        "diffUnified": "@@ -174,6 +174,7 @@\n struct bigben_device {\n \tstruct hid_device *hid;\n \tstruct hid_report *report;\n+\tspinlock_t lock;\n \tbool removed;\n \tu8 led_state;         /* LED1 = 1 .. LED4 = 8 */\n \tu8 right_motor_on;    /* right motor off/on 0/1 */\n@@ -190,12 +191,27 @@\n \tstruct bigben_device *bigben = container_of(work,\n \t\tstruct bigben_device, worker);\n \tstruct hid_field *report_field = bigben->report->field[0];\n+\tbool do_work_led = false;\n+\tbool do_work_ff = false;\n+\tu8 *buf;\n+\tu32 len;\n+\tunsigned long flags;\n \n \tif (bigben->removed || !report_field)\n \t\treturn;\n \n+\tbuf = hid_alloc_report_buf(bigben->report, GFP_KERNEL);\n+\tif (!buf)\n+\t\treturn;\n+\n+\tlen = hid_report_len(bigben->report);\n+\n+\t/* LED work */\n+\tspin_lock_irqsave(&bigben->lock, flags);\n+\n \tif (bigben->work_led) {\n \t\tbigben->work_led = false;\n+\t\tdo_work_led = true;\n \t\treport_field->value[0] = 0x01; /* 1 = led message */\n \t\treport_field->value[1] = 0x08; /* reserved value, always 8 */\n \t\treport_field->value[2] = bigben->led_state;\n@@ -204,11 +220,22 @@\n \t\treport_field->value[5] = 0x00; /* padding */\n \t\treport_field->value[6] = 0x00; /* padding */\n \t\treport_field->value[7] = 0x00; /* padding */\n-\t\thid_hw_request(bigben->hid, bigben->report, HID_REQ_SET_REPORT);\n+\t\thid_output_report(bigben->report, buf);\n \t}\n \n+\tspin_unlock_irqrestore(&bigben->lock, flags);\n+\n+\tif (do_work_led) {\n+\t\thid_hw_raw_request(bigben->hid, bigben->report->id, buf, len,\n+\t\t\t\t   bigben->report->type, HID_REQ_SET_REPORT);\n+\t}\n+\n+\t/* FF work */\n+\tspin_lock_irqsave(&bigben->lock, flags);\n+\n \tif (bigben->work_ff) {\n \t\tbigben->work_ff = false;\n+\t\tdo_work_ff = true;\n \t\treport_field->value[0] = 0x02; /* 2 = rumble effect message */\n \t\treport_field->value[1] = 0x08; /* reserved value, always 8 */\n \t\treport_field->value[2] = bigben->right_motor_on;\n@@ -217,8 +244,17 @@\n \t\treport_field->value[5] = 0x00; /* padding */\n \t\treport_field->value[6] = 0x00; /* padding */\n \t\treport_field->value[7] = 0x00; /* padding */\n-\t\thid_hw_request(bigben->hid, bigben->report, HID_REQ_SET_REPORT);\n+\t\thid_output_report(bigben->report, buf);\n \t}\n+\n+\tspin_unlock_irqrestore(&bigben->lock, flags);\n+\n+\tif (do_work_ff) {\n+\t\thid_hw_raw_request(bigben->hid, bigben->report->id, buf, len,\n+\t\t\t\t   bigben->report->type, HID_REQ_SET_REPORT);\n+\t}\n+\n+\tkfree(buf);\n }\n \n static int hid_bigben_play_effect(struct input_dev *dev, void *data,\n@@ -228,6 +264,7 @@\n \tstruct bigben_device *bigben = hid_get_drvdata(hid);\n \tu8 right_motor_on;\n \tu8 left_motor_force;\n+\tunsigned long flags;\n \n \tif (!bigben) {\n \t\thid_err(hid, \"no device data\\n\");\n@@ -242,9 +279,12 @@\n \n \tif (right_motor_on != bigben->right_motor_on ||\n \t\t\tleft_motor_force != bigben->left_motor_force) {\n+\t\tspin_lock_irqsave(&bigben->lock, flags);\n \t\tbigben->right_motor_on   = right_motor_on;\n \t\tbigben->left_motor_force = left_motor_force;\n \t\tbigben->work_ff = true;\n+\t\tspin_unlock_irqrestore(&bigben->lock, flags);\n+\n \t\tschedule_work(&bigben->worker);\n \t}\n \n@@ -259,6 +299,7 @@\n \tstruct bigben_device *bigben = hid_get_drvdata(hid);\n \tint n;\n \tbool work;\n+\tunsigned long flags;\n \n \tif (!bigben) {\n \t\thid_err(hid, \"no device data\\n\");\n@@ -267,6 +308,7 @@\n \n \tfor (n = 0; n < NUM_LEDS; n++) {\n \t\tif (led == bigben->leds[n]) {\n+\t\t\tspin_lock_irqsave(&bigben->lock, flags);\n \t\t\tif (value == LED_OFF) {\n \t\t\t\twork = (bigben->led_state & BIT(n));\n \t\t\t\tbigben->led_state &= ~BIT(n);\n@@ -274,6 +316,7 @@\n \t\t\t\twork = !(bigben->led_state & BIT(n));\n \t\t\t\tbigben->led_state |= BIT(n);\n \t\t\t}\n+\t\t\tspin_unlock_irqrestore(&bigben->lock, flags);\n \n \t\t\tif (work) {\n \t\t\t\tbigben->work_led = true;\n@@ -307,8 +350,12 @@\n static void bigben_remove(struct hid_device *hid)\n {\n \tstruct bigben_device *bigben = hid_get_drvdata(hid);\n+\tunsigned long flags;\n \n+\tspin_lock_irqsave(&bigben->lock, flags);\n \tbigben->removed = true;\n+\tspin_unlock_irqrestore(&bigben->lock, flags);\n+\n \tcancel_work_sync(&bigben->worker);\n \thid_hw_stop(hid);\n }\n@@ -362,6 +409,7 @@\n \tset_bit(FF_RUMBLE, hidinput->input->ffbit);\n \n \tINIT_WORK(&bigben->worker, bigben_worker);\n+\tspin_lock_init(&bigben->lock);\n \n \terror = input_ff_create_memless(hidinput->input, NULL,\n \t\thid_bigben_play_effect);"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Subcomponent": "HID"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a012a"
+  },
+  "CVE": "CVE-2023-33015",
+  "References": {
+    "text": "A-285903140\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a012d"
+  },
+  "CVE": "CVE-2023-28549",
+  "References": {
+    "text": "A-280342096\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a012b"
+  },
+  "CVE": "CVE-2022-40534",
+  "References": {
+    "text": "A-288580358\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a012f"
+  },
+  "CVE": "CVE-2023-28581",
+  "References": {
+    "text": "A-285902431\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "Critical",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a0130"
+  },
+  "CVE": "CVE-2023-28538",
+  "References": {
+    "text": "A-280341574\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a012c"
+  },
+  "CVE": "CVE-2023-33016",
+  "References": {
+    "text": "A-285902923\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a0131"
+  },
+  "CVE": "CVE-2023-21653",
+  "References": {
+    "text": "A-271880270\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a0132"
+  },
+  "CVE": "CVE-2023-21646",
+  "References": {
+    "text": "A-271879257\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0156267765680b33a012e"
+  },
+  "CVE": "CVE-2023-28573",
+  "References": {
+    "text": "A-285902920\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Closed-source component"
+},
+{
+  "_id": {
+    "$oid": "65e0158342b14fb674d12df9"
+  },
+  "CVE": "CVE-2023-20819",
+  "References": {
+    "text": "A-294779648\n     M-MOLY01068234\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "CDMA PPP protocol"
+},
+{
+  "_id": {
+    "$oid": "65e0158342b14fb674d12dfa"
+  },
+  "CVE": "CVE-2023-32820",
+  "References": {
+    "text": "A-294781433\n     M-ALPS07932637\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "wlan firmware"
+},
+{
+  "_id": {
+    "$oid": "65e0158342b14fb674d12dfb"
+  },
+  "CVE": "CVE-2023-32819",
+  "References": {
+    "text": "A-294779649\n     M-ALPS07993705\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "display"
+},
+{
+  "_id": {
+    "$oid": "65e015956a8bbfc0823f43e1"
+  },
+  "CVE": "CVE-2023-28469",
+  "References": {
+    "text": "A-274006187\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "Mali"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2d8"
+  },
+  "CVE": "CVE-2023-21215",
+  "References": {
+    "text": "A-291982610\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2d9"
+  },
+  "CVE": "CVE-2023-21228",
+  "References": {
+    "text": "A-291999439\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2da"
+  },
+  "CVE": "CVE-2023-21163",
+  "References": {
+    "text": "A-292003338\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2dd"
+  },
+  "CVE": "CVE-2023-21162",
+  "References": {
+    "text": "A-292004168\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2db"
+  },
+  "CVE": "CVE-2023-21166",
+  "References": {
+    "text": "A-292002163\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2df"
+  },
+  "CVE": "CVE-2023-21164",
+  "References": {
+    "text": "A-292002918\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e0"
+  },
+  "CVE": "CVE-2023-21217",
+  "References": {
+    "text": "A-292087506\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e1"
+  },
+  "CVE": "CVE-2023-21403",
+  "References": {
+    "text": "A-305096969\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e2"
+  },
+  "CVE": "CVE-2023-21263",
+  "References": {
+    "text": "A-305095406\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e3"
+  },
+  "CVE": "CVE-2023-21402",
+  "References": {
+    "text": "A-305093885\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e4"
+  },
+  "CVE": "CVE-2023-21401",
+  "References": {
+    "text": "A-305091236\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e5"
+  },
+  "CVE": "CVE-2023-21218",
+  "References": {
+    "text": "A-292000190\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2dc"
+  },
+  "CVE": "CVE-2023-35690",
+  "References": {
+    "text": "A-305095935\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2de"
+  },
+  "CVE": "CVE-2023-21227",
+  "References": {
+    "text": "A-291998937\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015b09fbf95dc7478a2e6"
+  },
+  "CVE": "CVE-2023-21216",
+  "References": {
+    "text": "A-291999952\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e015d50596a3fe6ac5373e"
+  },
+  "CVE": "CVE-2021-39633",
+  "References": {
+    "text": "A-150694665 \n    Upstream kernel",
+    "link": "http://android.googlesource.com/kernel/common/+/1d011c4803c72f3907eccfc1ec63caefb852fcbf",
+    "metaData": {
+      "commit": "1d011c4803c72f3907eccfc1ec63caefb852fcbf",
+      "author": "Shreyansh Chouhan <chouhan.shreyansh630@gmail.com>",
+      "committer": "David S. Miller <davem@davemloft.net>",
+      "tree": "4a1f5079a0345baaee566ad60dc134fb3be704d5",
+      "parent": "12d125b4574bd7f602802d94d7b4a55d85aa8e25 [diff]"
+    },
+    "metadataMessage": "ip_gre: add validation for csum_start\n\nValidate csum_start in gre_handle_offloads before we call _gre_xmit so\nthat we do not crash later when the csum_start value is used in the\nlco_csum function call.\n\nThis patch deals with ipv4 code.\n\nFixes: c54419321455 (\"GRE: Refactor GRE tunneling code.\")\nReported-by: syzbot+ff8e1b9f2f36481e2efc@syzkaller.appspotmail.com\nSigned-off-by: Shreyansh Chouhan <chouhan.shreyansh630@gmail.com>\nReviewed-by: Willem de Bruijn <willemb@google.com>\nSigned-off-by: David S. Miller <davem@davemloft.net>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/net/ipv4/ip_gre.c b/net/ipv4/ip_gre.c\nindex 12dca0c..95419b7 100644\n--- a/net/ipv4/ip_gre.c\n+++ b/net/ipv4/ip_gre.c",
+          "files": [
+            "/kernel/common/+/12d125b4574bd7f602802d94d7b4a55d85aa8e25/net/ipv4/ip_gre.c",
+            "/kernel/common/+/1d011c4803c72f3907eccfc1ec63caefb852fcbf/net/ipv4/ip_gre.c"
+          ]
+        },
+        "diffUnified": "@@ -473,6 +473,8 @@\n \n static int gre_handle_offloads(struct sk_buff *skb, bool csum)\n {\n+\tif (csum && skb_checksum_start(skb) < skb->data)\n+\t\treturn -EINVAL;\n \treturn iptunnel_handle_offloads(skb, csum ? SKB_GSO_GRE_CSUM : SKB_GSO_GRE);\n }"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "Kernel"
+},
+{
+  "_id": {
+    "$oid": "65e015d70596a3fe6ac5373f"
+  },
+  "CVE": "CVE-2021-39634",
+  "References": {
+    "text": "A-204450605 \n    Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/f8d4f44df056c5b504b0d49683fb7279218fd207",
+    "metaData": {
+      "commit": "f8d4f44df056c5b504b0d49683fb7279218fd207",
+      "author": "Al Viro <viro@zeniv.linux.org.uk>",
+      "committer": "Al Viro <viro@zeniv.linux.org.uk>",
+      "tree": "2bdd12e969243fa6067b0d2498c491150367aea3",
+      "parent": "77f4689de17c0887775bb77896f4cc11a39bf848 [diff]"
+    },
+    "metadataMessage": "epoll: do not insert into poll queues until all sanity checks are done\n\nSigned-off-by: Al Viro <viro@zeniv.linux.org.uk>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/fs/eventpoll.c b/fs/eventpoll.c\nindex 8107e06d..5207dfc 100644\n--- a/fs/eventpoll.c\n+++ b/fs/eventpoll.c",
+          "files": [
+            "/kernel/common/+/77f4689de17c0887775bb77896f4cc11a39bf848/fs/eventpoll.c",
+            "/kernel/common/+/f8d4f44df056c5b504b0d49683fb7279218fd207/fs/eventpoll.c"
+          ]
+        },
+        "diffUnified": "@@ -1522,6 +1522,22 @@\n \t\tRCU_INIT_POINTER(epi->ws, NULL);\n \t}\n \n+\t/* Add the current item to the list of active epoll hook for this file */\n+\tspin_lock(&tfile->f_lock);\n+\tlist_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);\n+\tspin_unlock(&tfile->f_lock);\n+\n+\t/*\n+\t * Add the current item to the RB tree. All RB tree operations are\n+\t * protected by \"mtx\", and ep_insert() is called with \"mtx\" held.\n+\t */\n+\tep_rbtree_insert(ep, epi);\n+\n+\t/* now check if we've created too many backpaths */\n+\terror = -EINVAL;\n+\tif (full_check && reverse_path_check())\n+\t\tgoto error_remove_epi;\n+\n \t/* Initialize the poll table using the queue callback */\n \tepq.epi = epi;\n \tinit_poll_funcptr(&epq.pt, ep_ptable_queue_proc);\n@@ -1544,22 +1560,6 @@\n \tif (epi->nwait < 0)\n \t\tgoto error_unregister;\n \n-\t/* Add the current item to the list of active epoll hook for this file */\n-\tspin_lock(&tfile->f_lock);\n-\tlist_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);\n-\tspin_unlock(&tfile->f_lock);\n-\n-\t/*\n-\t * Add the current item to the RB tree. All RB tree operations are\n-\t * protected by \"mtx\", and ep_insert() is called with \"mtx\" held.\n-\t */\n-\tep_rbtree_insert(ep, epi);\n-\n-\t/* now check if we've created too many backpaths */\n-\terror = -EINVAL;\n-\tif (full_check && reverse_path_check())\n-\t\tgoto error_remove_epi;\n-\n \t/* We have to drop the new item inside our item list to keep track of it */\n \twrite_lock_irq(&ep->lock);\n \n@@ -1588,6 +1588,8 @@\n \n \treturn 0;\n \n+error_unregister:\n+\tep_unregister_pollwait(ep, epi);\n error_remove_epi:\n \tspin_lock(&tfile->f_lock);\n \tlist_del_rcu(&epi->fllink);\n@@ -1595,9 +1597,6 @@\n \n \trb_erase_cached(&epi->rbn, &ep->rbr);\n \n-error_unregister:\n-\tep_unregister_pollwait(ep, epi);\n-\n \t/*\n \t * We need to do this because an event could have been arrived on some\n \t * allocated wait queue. Note that we don't care about the ep->ovflist"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "Kernel"
+},
+{
+  "_id": {
+    "$oid": "65e015f07ec0b7c5135a4f70"
+  },
+  "CVE": "CVE-2021-39672",
+  "References": {
+    "text": "A-202018701*",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Component": "Fastboot"
+},
+{
+  "_id": {
+    "$oid": "65e0165f6e8853b106ae0b4a"
+  },
+  "CVE": "CVE-2021-39807",
+  "References": {
+    "text": "A-209446496",
+    "link": "https://android.googlesource.com/platform/packages/apps/Settings/+/c59ecb07f5b16d38f3976ce393cc5c29a241963a",
+    "metaData": {
+      "commit": "c59ecb07f5b16d38f3976ce393cc5c29a241963a",
+      "author": "Jack Yu <jackcwyu@google.com>",
+      "committer": "Android Build Coastguard Worker <android-build-coastguard-worker@google.com>",
+      "tree": "fd4b1d285f12ea37906355516dfb4e10b4fb06b0",
+      "parent": "5a50b8ff037f89e21d2af748c49c40145e969241 [diff]"
+    },
+    "metadataMessage": "Do not let guest user disable secure nfc\n\nBug: 209446496\nTest: manual\nMerged-In: I7253f7f08fde04e30400a30d9a0d24f1ceff04b0\nChange-Id: I7253f7f08fde04e30400a30d9a0d24f1ceff04b0\n(cherry picked from commit d9e3e6e4b1c3cb1a04dba0f530505843ef44a748)\n(cherry picked from commit a579ca7554dcbfd3fce1c90451fb54cb676cfdda)\nMerged-In:I7253f7f08fde04e30400a30d9a0d24f1ceff04b0",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/src/com/android/settings/connecteddevice/NfcAndPaymentFragment.java b/src/com/android/settings/connecteddevice/NfcAndPaymentFragment.java\nindex 4ebc0cd..feb757f 100644\n--- a/src/com/android/settings/connecteddevice/NfcAndPaymentFragment.java\n+++ b/src/com/android/settings/connecteddevice/NfcAndPaymentFragment.java",
+          "files": [
+            "/platform/packages/apps/Settings/+/5a50b8ff037f89e21d2af748c49c40145e969241/src/com/android/settings/connecteddevice/NfcAndPaymentFragment.java",
+            "/platform/packages/apps/Settings/+/c59ecb07f5b16d38f3976ce393cc5c29a241963a/src/com/android/settings/connecteddevice/NfcAndPaymentFragment.java"
+          ]
+        },
+        "diffUnified": "@@ -17,6 +17,12 @@\n package com.android.settings.connecteddevice;\n \n import android.app.settings.SettingsEnums;\n+import android.content.Context;\n+import android.content.pm.PackageManager;\n+import android.content.pm.UserInfo;\n+import android.os.UserHandle;\n+import android.os.UserManager;\n+\n \n import com.android.settings.R;\n import com.android.settings.dashboard.DashboardFragment;\n@@ -54,5 +60,16 @@\n      * For Search.\n      */\n     public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =\n-            new BaseSearchIndexProvider(R.xml.nfc_and_payment_settings);\n+            new BaseSearchIndexProvider(R.xml.nfc_and_payment_settings) {\n+            @Override\n+                protected boolean isPageSearchEnabled(Context context) {\n+                    final UserManager userManager = context.getSystemService(UserManager.class);\n+                    final UserInfo myUserInfo = userManager.getUserInfo(UserHandle.myUserId());\n+                    if (myUserInfo.isGuest()) {\n+                        return false;\n+                    }\n+                    final PackageManager pm = context.getPackageManager();\n+                    return pm.hasSystemFeature(PackageManager.FEATURE_NFC);\n+                }\n+            };\n }"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/src/com/android/settings/nfc/SecureNfcEnabler.java b/src/com/android/settings/nfc/SecureNfcEnabler.java\nindex 9acaf64..f31a382 100644\n--- a/src/com/android/settings/nfc/SecureNfcEnabler.java\n+++ b/src/com/android/settings/nfc/SecureNfcEnabler.java",
+          "files": [
+            "/platform/packages/apps/Settings/+/5a50b8ff037f89e21d2af748c49c40145e969241/src/com/android/settings/nfc/SecureNfcEnabler.java",
+            "/platform/packages/apps/Settings/+/c59ecb07f5b16d38f3976ce393cc5c29a241963a/src/com/android/settings/nfc/SecureNfcEnabler.java"
+          ]
+        },
+        "diffUnified": "@@ -18,9 +18,8 @@\n \n import android.content.Context;\n import android.nfc.NfcAdapter;\n-import android.provider.Settings;\n+import android.os.UserManager;\n \n-import androidx.annotation.VisibleForTesting;\n import androidx.preference.SwitchPreference;\n \n import com.android.settings.R;\n@@ -32,10 +31,12 @@\n  */\n public class SecureNfcEnabler extends BaseNfcEnabler {\n     private final SwitchPreference mPreference;\n+    private final UserManager mUserManager;\n \n     public SecureNfcEnabler(Context context, SwitchPreference preference) {\n         super(context);\n         mPreference = preference;\n+        mUserManager = context.getSystemService(UserManager.class);\n     }\n \n     @Override\n@@ -48,7 +49,7 @@\n             case NfcAdapter.STATE_ON:\n                 mPreference.setSummary(R.string.nfc_secure_toggle_summary);\n                 mPreference.setChecked(mPreference.isChecked());\n-                mPreference.setEnabled(true);\n+                mPreference.setEnabled(isToggleable());\n                 break;\n             case NfcAdapter.STATE_TURNING_ON:\n                 mPreference.setEnabled(false);\n@@ -58,4 +59,11 @@\n                 break;\n         }\n     }\n+\n+    private boolean isToggleable() {\n+        if (mUserManager.isGuestUser()) {\n+            return false;\n+        }\n+        return true;\n+    }\n }"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Updated AOSP versions": "10, 11, 12, 12L"
+},
+{
+  "_id": {
+    "$oid": "65e016850656cf4f91591262"
+  },
+  "CVE": "CVE-2022-20110",
+  "References": {
+    "text": "A-223071150\n    M-ALPS06399915\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Component": "ion"
+},
+{
+  "_id": {
+    "$oid": "65e016850656cf4f91591263"
+  },
+  "CVE": "CVE-2022-20084",
+  "References": {
+    "text": "A-223071148\n    M-ALPS06498874\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Component": "telephony"
+},
+{
+  "_id": {
+    "$oid": "65e016850656cf4f91591264"
+  },
+  "CVE": "CVE-2022-20109",
+  "References": {
+    "text": "A-223072269\n    M-ALPS06399915\n    *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Component": "ion"
+},
+{
+  "_id": {
+    "$oid": "65e0169693395ac6ad0c9166"
+  },
+  "CVE": "CVE-2022-20132",
+  "References": {
+    "text": "A-188677105\n  Upstream kernel\n  [2]\n  [3]\n  [4]\n  [5]\n  [6]\n  [7]",
+    "link": "https://android.googlesource.com/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea",
+    "metaData": {
+      "commit": "ddea17081f80af8ec1c9247f9b88579530e873ea",
+      "author": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "committer": "Greg Kroah-Hartman <gregkh@google.com>",
+      "tree": "601e2c2f84063d0a6eba6449020ed1121240eafa",
+      "parent": "81b6ea435ee856098765df50c308f8b8cbda4d30 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: HID: add hid_is_usb() function to make it simpler for USB detection\n\nA number of HID drivers already call hid_is_using_ll_driver() but only\nfor the detection of if this is a USB device or not.  Make this more\nobvious by creating hid_is_usb() and calling the function that way.\n\nAlso converts the existing hid_is_using_ll_driver() functions to use the\nnew call.\n\nCc: Jiri Kosina <jikos@kernel.org>\nCc: Benjamin Tissoires <benjamin.tissoires@redhat.com>\nCc: linux-input@vger.kernel.org\nCc: stable@vger.kernel.org\nTested-by: Benjamin Tissoires <benjamin.tissoires@redhat.com>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\nSigned-off-by: Benjamin Tissoires <benjamin.tissoires@redhat.com>\nLink: https://lore.kernel.org/r/20211201183503.2373082-1-gregkh@linuxfoundation.org\n(cherry picked from commit f83baa0cb6cfc92ebaf7f9d3a99d7e34f2e77a8a)\nBug: 188677105\nSigned-off-by: Greg Kroah-Hartman <gregkh@google.com>\nChange-Id: Ibfa4252d4b6501a09a997bb9efbab46fae3fd1dc",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/hid/hid-asus.c b/drivers/hid/hid-asus.c\nindex c183caf..f85c6e3 100644\n--- a/drivers/hid/hid-asus.c\n+++ b/drivers/hid/hid-asus.c",
+          "files": [
+            "/kernel/common/+/81b6ea435ee856098765df50c308f8b8cbda4d30/drivers/hid/hid-asus.c",
+            "/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea/drivers/hid/hid-asus.c"
+          ]
+        },
+        "diffUnified": "@@ -918,8 +918,7 @@\n \tif (drvdata->quirks & QUIRK_IS_MULTITOUCH)\n \t\tdrvdata->tp = &asus_i2c_tp;\n \n-\tif ((drvdata->quirks & QUIRK_T100_KEYBOARD) &&\n-\t    hid_is_using_ll_driver(hdev, &usb_hid_driver)) {\n+\tif ((drvdata->quirks & QUIRK_T100_KEYBOARD) && hid_is_usb(hdev)) {\n \t\tstruct usb_interface *intf = to_usb_interface(hdev->dev.parent);\n \n \t\tif (intf->altsetting->desc.bInterfaceNumber == T100_TPAD_INTF) {\n@@ -947,8 +946,7 @@\n \t\tdrvdata->tp = &asus_t100chi_tp;\n \t}\n \n-\tif ((drvdata->quirks & QUIRK_MEDION_E1239T) &&\n-\t    hid_is_using_ll_driver(hdev, &usb_hid_driver)) {\n+\tif ((drvdata->quirks & QUIRK_MEDION_E1239T) && hid_is_usb(hdev)) {\n \t\tstruct usb_host_interface *alt =\n \t\t\tto_usb_interface(hdev->dev.parent)->altsetting;"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/hid/hid-logitech-dj.c b/drivers/hid/hid-logitech-dj.c\nindex 271bd8d..a311b0a 100644\n--- a/drivers/hid/hid-logitech-dj.c\n+++ b/drivers/hid/hid-logitech-dj.c",
+          "files": [
+            "/kernel/common/+/81b6ea435ee856098765df50c308f8b8cbda4d30/drivers/hid/hid-logitech-dj.c",
+            "/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea/drivers/hid/hid-logitech-dj.c"
+          ]
+        },
+        "diffUnified": "@@ -1693,7 +1693,7 @@\n \tcase recvr_type_27mhz:\t\tno_dj_interfaces = 2; break;\n \tcase recvr_type_bluetooth:\tno_dj_interfaces = 2; break;\n \t}\n-\tif (hid_is_using_ll_driver(hdev, &usb_hid_driver)) {\n+\tif (hid_is_usb(hdev)) {\n \t\tintf = to_usb_interface(hdev->dev.parent);\n \t\tif (intf && intf->altsetting->desc.bInterfaceNumber >=\n \t\t\t\t\t\t\tno_dj_interfaces) {"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/hid/hid-u2fzero.c b/drivers/hid/hid-u2fzero.c\nindex 95e0807..6f107e3 100644\n--- a/drivers/hid/hid-u2fzero.c\n+++ b/drivers/hid/hid-u2fzero.c",
+          "files": [
+            "/kernel/common/+/81b6ea435ee856098765df50c308f8b8cbda4d30/drivers/hid/hid-u2fzero.c",
+            "/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea/drivers/hid/hid-u2fzero.c"
+          ]
+        },
+        "diffUnified": "@@ -286,7 +286,7 @@\n \tunsigned int minor;\n \tint ret;\n \n-\tif (!hid_is_using_ll_driver(hdev, &usb_hid_driver))\n+\tif (!hid_is_usb(hdev))\n \t\treturn -EINVAL;\n \n \tdev = devm_kzalloc(&hdev->dev, sizeof(*dev), GFP_KERNEL);"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/hid/hid-uclogic-params.c b/drivers/hid/hid-uclogic-params.c\nindex d26d8cd..dd05bed4 100644\n--- a/drivers/hid/hid-uclogic-params.c\n+++ b/drivers/hid/hid-uclogic-params.c",
+          "files": [
+            "/kernel/common/+/81b6ea435ee856098765df50c308f8b8cbda4d30/drivers/hid/hid-uclogic-params.c",
+            "/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea/drivers/hid/hid-uclogic-params.c"
+          ]
+        },
+        "diffUnified": "@@ -841,8 +841,7 @@\n \tstruct uclogic_params p = {0, };\n \n \t/* Check arguments */\n-\tif (params == NULL || hdev == NULL ||\n-\t    !hid_is_using_ll_driver(hdev, &usb_hid_driver)) {\n+\tif (params == NULL || hdev == NULL || !hid_is_usb(hdev)) {\n \t\trc = -EINVAL;\n \t\tgoto cleanup;\n \t}"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/hid/wacom_sys.c b/drivers/hid/wacom_sys.c\nindex 73dafa6..e94ec84 100644\n--- a/drivers/hid/wacom_sys.c\n+++ b/drivers/hid/wacom_sys.c",
+          "files": [
+            "/kernel/common/+/81b6ea435ee856098765df50c308f8b8cbda4d30/drivers/hid/wacom_sys.c",
+            "/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea/drivers/hid/wacom_sys.c"
+          ]
+        },
+        "diffUnified": "@@ -2217,7 +2217,7 @@\n \tif ((features->type == HID_GENERIC) && !strcmp(\"Wacom HID\", features->name)) {\n \t\tchar *product_name = wacom->hdev->name;\n \n-\t\tif (hid_is_using_ll_driver(wacom->hdev, &usb_hid_driver)) {\n+\t\tif (hid_is_usb(wacom->hdev)) {\n \t\t\tstruct usb_interface *intf = to_usb_interface(wacom->hdev->dev.parent);\n \t\t\tstruct usb_device *dev = interface_to_usbdev(intf);\n \t\t\tproduct_name = dev->product;"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/include/linux/hid.h b/include/linux/hid.h\nindex 6ed2a97e..fc56d53 100644\n--- a/include/linux/hid.h\n+++ b/include/linux/hid.h",
+          "files": [
+            "/kernel/common/+/81b6ea435ee856098765df50c308f8b8cbda4d30/include/linux/hid.h",
+            "/kernel/common/+/ddea17081f80af8ec1c9247f9b88579530e873ea/include/linux/hid.h"
+          ]
+        },
+        "diffUnified": "@@ -833,6 +833,11 @@\n \treturn hdev->ll_driver == driver;\n }\n \n+static inline bool hid_is_usb(struct hid_device *hdev)\n+{\n+\treturn hid_is_using_ll_driver(hdev, &usb_hid_driver);\n+}\n+\n #define\tPM_HINT_FULLON\t1<<5\n #define PM_HINT_NORMAL\t1<<1"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "USB HID"
+},
+{
+  "_id": {
+    "$oid": "65e0169693395ac6ad0c9167"
+  },
+  "CVE": "CVE-2022-24958",
+  "References": {
+    "text": "A-220261709\n  Upstream kernel\n  [2]\n  [3]\n  [4]",
+    "link": "https://android.googlesource.com/kernel/common/+/ff0000fe82f45",
+    "metaData": {
+      "commit": "ff0000fe82f45cee26c83abb40b01e43c52739e9",
+      "author": "Hangyu Hua <hbh25y@gmail.com>",
+      "committer": "Lee Jones <joneslee@google.com>",
+      "tree": "4bcba4804a429bc7f7130f377877d83aec98d719",
+      "parent": "590a98d5d108653cb4ebdf61ec73b2d31a1f7b81 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: usb: gadget: don't release an existing dev->buf\n\ncommit 89f3594d0de58e8a57d92d497dea9fee3d4b9cda upstream.\n\ndev->buf does not need to be released if it already exists before\nexecuting dev_config.\n\nBug: 220261709\nAcked-by: Alan Stern <stern@rowland.harvard.edu>\nSigned-off-by: Hangyu Hua <hbh25y@gmail.com>\nLink: https://lore.kernel.org/r/20211231172138.7993-2-hbh25y@gmail.com\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\nSigned-off-by: Lee Jones <lee.jones@linaro.org>\nChange-Id: Id53d6770fbae0a7fcf0fa136157c0ab34fb5da64",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/usb/gadget/legacy/inode.c b/drivers/usb/gadget/legacy/inode.c\nindex 523d05e..454860d 100644\n--- a/drivers/usb/gadget/legacy/inode.c\n+++ b/drivers/usb/gadget/legacy/inode.c",
+          "files": [
+            "/kernel/common/+/590a98d5d108653cb4ebdf61ec73b2d31a1f7b81/drivers/usb/gadget/legacy/inode.c",
+            "/kernel/common/+/ff0000fe82f45cee26c83abb40b01e43c52739e9/drivers/usb/gadget/legacy/inode.c"
+          ]
+        },
+        "diffUnified": "@@ -1828,8 +1828,9 @@\n \tspin_lock_irq (&dev->lock);\n \tvalue = -EINVAL;\n \tif (dev->buf) {\n+\t\tspin_unlock_irq(&dev->lock);\n \t\tkfree(kbuf);\n-\t\tgoto fail;\n+\t\treturn value;\n \t}\n \tdev->buf = kbuf;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "USB"
+},
+{
+  "_id": {
+    "$oid": "65e0169793395ac6ad0c9168"
+  },
+  "CVE": "CVE-2022-25258",
+  "References": {
+    "text": "A-222023189\n  Upstream kernel\n  [2]",
+    "link": "https://android.googlesource.com/kernel/common/+/22ec100472854",
+    "metaData": {
+      "commit": "22ec1004728548598f4f5b4a079a7873409eacfd",
+      "author": "Szymon Heidrich <szymon.heidrich@gmail.com>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "92bd33d231467b4d9cd65679d29aa423673b01a5",
+      "parent": "351159167cd8593311482148f64ca14715984544 [diff]"
+    },
+    "metadataMessage": "USB: gadget: validate interface OS descriptor requests\n\ncommit 75e5b4849b81e19e9efe1654b30d7f3151c33c2c upstream.\n\nStall the control endpoint in case provided index exceeds array size of\nMAX_CONFIG_INTERFACES or when the retrieved function pointer is null.\n\nSigned-off-by: Szymon Heidrich <szymon.heidrich@gmail.com>\nCc: stable@kernel.org\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/usb/gadget/composite.c b/drivers/usb/gadget/composite.c\nindex 8bec0cb..a980799 100644\n--- a/drivers/usb/gadget/composite.c\n+++ b/drivers/usb/gadget/composite.c",
+          "files": [
+            "/kernel/common/+/351159167cd8593311482148f64ca14715984544/drivers/usb/gadget/composite.c",
+            "/kernel/common/+/22ec1004728548598f4f5b4a079a7873409eacfd/drivers/usb/gadget/composite.c"
+          ]
+        },
+        "diffUnified": "@@ -1944,6 +1944,9 @@\n \t\t\t\tif (w_index != 0x5 || (w_value >> 8))\n \t\t\t\t\tbreak;\n \t\t\t\tinterface = w_value & 0xFF;\n+\t\t\t\tif (interface >= MAX_CONFIG_INTERFACES ||\n+\t\t\t\t    !os_desc_cfg->interface[interface])\n+\t\t\t\t\tbreak;\n \t\t\t\tbuf[6] = w_index;\n \t\t\t\tcount = count_ext_prop(os_desc_cfg,\n \t\t\t\t\tinterface);"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "USB"
+},
+{
+  "_id": {
+    "$oid": "65e0169793395ac6ad0c9169"
+  },
+  "CVE": "CVE-2021-4154",
+  "References": {
+    "text": "A-218836280\n  Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/811763e3beb6c",
+    "metaData": {
+      "commit": "811763e3beb6c922d168e9f509ec593e9240842e",
+      "author": "Christian Brauner <christian.brauner@ubuntu.com>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "98e7770ba75addfbfb3cd00412578283d47961a0",
+      "parent": "0728df8048060e9bdedb9dd38c62782ee97184ba [diff]"
+    },
+    "metadataMessage": "cgroup: verify that source is a string\n\ncommit 3b0462726e7ef281c35a7a4ae33e93ee2bc9975b upstream.\n\nThe following sequence can be used to trigger a UAF:\n\n    int fscontext_fd = fsopen(\"cgroup\");\n    int fd_null = open(\"/dev/null, O_RDONLY);\n    int fsconfig(fscontext_fd, FSCONFIG_SET_FD, \"source\", fd_null);\n    close_range(3, ~0U, 0);\n\nThe cgroup v1 specific fs parser expects a string for the \"source\"\nparameter.  However, it is perfectly legitimate to e.g.  specify a file\ndescriptor for the \"source\" parameter.  The fs parser doesn't know what\na filesystem allows there.  So it's a bug to assume that \"source\" is\nalways of type fs_value_is_string when it can reasonably also be\nfs_value_is_file.\n\nThis assumption in the cgroup code causes a UAF because struct\nfs_parameter uses a union for the actual value.  Access to that union is\nguarded by the param->type member.  Since the cgroup paramter parser\ndidn't check param->type but unconditionally moved param->string into\nfc->source a close on the fscontext_fd would trigger a UAF during\nput_fs_context() which frees fc->source thereby freeing the file stashed\nin param->file causing a UAF during a close of the fd_null.\n\nFix this by verifying that param->type is actually a string and report\nan error if not.\n\nIn follow up patches I'll add a new generic helper that can be used here\nand by other filesystems instead of this error-prone copy-pasta fix.\nBut fixing it in here first makes backporting a it to stable a lot\neasier.\n\nFixes: 8d2451f4994f (\"cgroup1: switch to option-by-option parsing\")\nReported-by: syzbot+283ce5a46486d6acdbaf@syzkaller.appspotmail.com\nCc: Christoph Hellwig <hch@lst.de>\nCc: Alexander Viro <viro@zeniv.linux.org.uk>\nCc: Dmitry Vyukov <dvyukov@google.com>\nCc: <stable@kernel.org>\nCc: syzkaller-bugs <syzkaller-bugs@googlegroups.com>\nSigned-off-by: Christian Brauner <christian.brauner@ubuntu.com>\nSigned-off-by: Linus Torvalds <torvalds@linux-foundation.org>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/kernel/cgroup/cgroup-v1.c b/kernel/cgroup/cgroup-v1.c\nindex f6dddb3..04eb28f 100644\n--- a/kernel/cgroup/cgroup-v1.c\n+++ b/kernel/cgroup/cgroup-v1.c",
+          "files": [
+            "/kernel/common/+/0728df8048060e9bdedb9dd38c62782ee97184ba/kernel/cgroup/cgroup-v1.c",
+            "/kernel/common/+/811763e3beb6c922d168e9f509ec593e9240842e/kernel/cgroup/cgroup-v1.c"
+          ]
+        },
+        "diffUnified": "@@ -912,6 +912,8 @@\n \topt = fs_parse(fc, cgroup1_fs_parameters, param, &result);\n \tif (opt == -ENOPARAM) {\n \t\tif (strcmp(param->key, \"source\") == 0) {\n+\t\t\tif (param->type != fs_value_is_string)\n+\t\t\t\treturn invalf(fc, \"Non-string source\");\n \t\t\tif (fc->source)\n \t\t\t\treturn invalf(fc, \"Multiple sources not supported\");\n \t\t\tfc->source = param->string;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "Kernel"
+},
+{
+  "_id": {
+    "$oid": "65e0169793395ac6ad0c916a"
+  },
+  "CVE": "CVE-2022-20141",
+  "References": {
+    "text": "A-112551163\n  Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/ddd7e8b7b8483",
+    "metaData": {
+      "commit": "ddd7e8b7b84836c584a284b98ca9bd7a348a0558",
+      "author": "Liu Jian <liujian56@huawei.com>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "c8a21a008907fb45d666bfd2d767c41c39fa31e2",
+      "parent": "e07f317d5a289f06b7eb9025d2ada744cf22c940 [diff]"
+    },
+    "metadataMessage": "igmp: Add ip_mc_list lock in ip_check_mc_rcu\n\ncommit 23d2b94043ca8835bd1e67749020e839f396a1c2 upstream.\n\nI got below panic when doing fuzz test:\n\nKernel panic - not syncing: panic_on_warn set ...\nCPU: 0 PID: 4056 Comm: syz-executor.3 Tainted: G    B             5.14.0-rc1-00195-gcff5c4254439-dirty #2\nHardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.12.0-59-gc9ba5276e321-prebuilt.qemu.org 04/01/2014\nCall Trace:\ndump_stack_lvl+0x7a/0x9b\npanic+0x2cd/0x5af\nend_report.cold+0x5a/0x5a\nkasan_report+0xec/0x110\nip_check_mc_rcu+0x556/0x5d0\n__mkroute_output+0x895/0x1740\nip_route_output_key_hash_rcu+0x2d0/0x1050\nip_route_output_key_hash+0x182/0x2e0\nip_route_output_flow+0x28/0x130\nudp_sendmsg+0x165d/0x2280\nudpv6_sendmsg+0x121e/0x24f0\ninet6_sendmsg+0xf7/0x140\nsock_sendmsg+0xe9/0x180\n____sys_sendmsg+0x2b8/0x7a0\n___sys_sendmsg+0xf0/0x160\n__sys_sendmmsg+0x17e/0x3c0\n__x64_sys_sendmmsg+0x9e/0x100\ndo_syscall_64+0x3b/0x90\nentry_SYSCALL_64_after_hwframe+0x44/0xae\nRIP: 0033:0x462eb9\nCode: f7 d8 64 89 02 b8 ff ff ff ff c3 66 0f 1f 44 00 00 48 89 f8\n 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48>\n 3d 01 f0 ff ff 73 01 c3 48 c7 c1 bc ff ff ff f7 d8 64 89 01 48\nRSP: 002b:00007f3df5af1c58 EFLAGS: 00000246 ORIG_RAX: 0000000000000133\nRAX: ffffffffffffffda RBX: 000000000073bf00 RCX: 0000000000462eb9\nRDX: 0000000000000312 RSI: 0000000020001700 RDI: 0000000000000007\nRBP: 0000000000000004 R08: 0000000000000000 R09: 0000000000000000\nR10: 0000000000000000 R11: 0000000000000246 R12: 00007f3df5af26bc\nR13: 00000000004c372d R14: 0000000000700b10 R15: 00000000ffffffff\n\nIt is one use-after-free in ip_check_mc_rcu.\nIn ip_mc_del_src, the ip_sf_list of pmc has been freed under pmc->lock protection.\nBut access to ip_sf_list in ip_check_mc_rcu is not protected by the lock.\n\nSigned-off-by: Liu Jian <liujian56@huawei.com>\nSigned-off-by: David S. Miller <davem@davemloft.net>\nSigned-off-by: Lee Jones <lee.jones@linaro.org>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/net/ipv4/igmp.c b/net/ipv4/igmp.c\nindex 00576ba..0c32199 100644\n--- a/net/ipv4/igmp.c\n+++ b/net/ipv4/igmp.c",
+          "files": [
+            "/kernel/common/+/e07f317d5a289f06b7eb9025d2ada744cf22c940/net/ipv4/igmp.c",
+            "/kernel/common/+/ddd7e8b7b84836c584a284b98ca9bd7a348a0558/net/ipv4/igmp.c"
+          ]
+        },
+        "diffUnified": "@@ -2720,6 +2720,7 @@\n \t\trv = 1;\n \t} else if (im) {\n \t\tif (src_addr) {\n+\t\t\tspin_lock_bh(&im->lock);\n \t\t\tfor (psf = im->sources; psf; psf = psf->sf_next) {\n \t\t\t\tif (psf->sf_inaddr == src_addr)\n \t\t\t\t\tbreak;\n@@ -2730,6 +2731,7 @@\n \t\t\t\t\tim->sfcount[MCAST_EXCLUDE];\n \t\t\telse\n \t\t\t\trv = im->sfcount[MCAST_EXCLUDE] != 0;\n+\t\t\tspin_unlock_bh(&im->lock);\n \t\t} else\n \t\t\trv = 1; /* unspecified source; tentatively allow */\n \t}"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "Inet sockets"
+},
+{
+  "_id": {
+    "$oid": "65e0169893395ac6ad0c916b"
+  },
+  "CVE": "CVE-2022-25375",
+  "References": {
+    "text": "A-162326603\n  Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/38ea1eac7d88072bbffb630e2b3db83ca649b826",
+    "metaData": {
+      "commit": "38ea1eac7d88072bbffb630e2b3db83ca649b826",
+      "author": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "9a3d222109493f7efac34eb24e2475463a56d692",
+      "parent": "75e5b4849b81e19e9efe1654b30d7f3151c33c2c [diff]"
+    },
+    "metadataMessage": "usb: gadget: rndis: check size of RNDIS_MSG_SET command\n\nCheck the size of the RNDIS_MSG_SET command given to us before\nattempting to respond to an invalid message size.\n\nReported-by: Szymon Heidrich <szymon.heidrich@gmail.com>\nCc: stable@kernel.org\nTested-by: Szymon Heidrich <szymon.heidrich@gmail.com>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/usb/gadget/function/rndis.c b/drivers/usb/gadget/function/rndis.c\nindex 431d5a7..b7ccf18 100644\n--- a/drivers/usb/gadget/function/rndis.c\n+++ b/drivers/usb/gadget/function/rndis.c",
+          "files": [
+            "/kernel/common/+/75e5b4849b81e19e9efe1654b30d7f3151c33c2c/drivers/usb/gadget/function/rndis.c",
+            "/kernel/common/+/38ea1eac7d88072bbffb630e2b3db83ca649b826/drivers/usb/gadget/function/rndis.c"
+          ]
+        },
+        "diffUnified": "@@ -637,14 +637,17 @@\n \trndis_set_cmplt_type *resp;\n \trndis_resp_t *r;\n \n+\tBufLength = le32_to_cpu(buf->InformationBufferLength);\n+\tBufOffset = le32_to_cpu(buf->InformationBufferOffset);\n+\tif ((BufLength > RNDIS_MAX_TOTAL_SIZE) ||\n+\t    (BufOffset + 8 >= RNDIS_MAX_TOTAL_SIZE))\n+\t\t    return -EINVAL;\n+\n \tr = rndis_add_response(params, sizeof(rndis_set_cmplt_type));\n \tif (!r)\n \t\treturn -ENOMEM;\n \tresp = (rndis_set_cmplt_type *)r->buf;\n \n-\tBufLength = le32_to_cpu(buf->InformationBufferLength);\n-\tBufOffset = le32_to_cpu(buf->InformationBufferOffset);\n-\n #ifdef\tVERBOSE_DEBUG\n \tpr_debug(\"%s: Length: %d\\n\", __func__, BufLength);\n \tpr_debug(\"%s: Offset: %d\\n\", __func__, BufOffset);"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "RNDIS driver"
+},
+{
+  "_id": {
+    "$oid": "65e016f6d929a67d7adfdcba"
+  },
+  "CVE": "CVE-2022-20227",
+  "References": {
+    "text": "A-216825460\n      Upstream kernel\n      [2]",
+    "link": "https://android.googlesource.com/kernel/common/+/7193ad3e50e59",
+    "metaData": {
+      "commit": "7193ad3e50e596ac2192531c58ba83b9e6d2444b",
+      "author": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "f51941f5e983535a964d1e7325bf9c0571c76d96",
+      "parent": "63fc70bffa16de431a51da7f530011de1b469780 [diff]"
+    },
+    "metadataMessage": "USB: gadget: detect too-big endpoint 0 requests\n\ncommit 153a2d7e3350cc89d406ba2d35be8793a64c2038 upstream.\n\nSometimes USB hosts can ask for buffers that are too large from endpoint\n0, which should not be allowed.  If this happens for OUT requests, stall\nthe endpoint, but for IN requests, trim the request size to the endpoint\nbuffer size.\n\nCo-developed-by: Szymon Heidrich <szymon.heidrich@gmail.com>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/usb/gadget/composite.c b/drivers/usb/gadget/composite.c\nindex 3ffa939..eda0cfe 100644\n--- a/drivers/usb/gadget/composite.c\n+++ b/drivers/usb/gadget/composite.c",
+          "files": [
+            "/kernel/common/+/63fc70bffa16de431a51da7f530011de1b469780/drivers/usb/gadget/composite.c",
+            "/kernel/common/+/7193ad3e50e596ac2192531c58ba83b9e6d2444b/drivers/usb/gadget/composite.c"
+          ]
+        },
+        "diffUnified": "@@ -1648,6 +1648,18 @@\n \tstruct usb_function\t\t*f = NULL;\n \tu8\t\t\t\tendp;\n \n+\tif (w_length > USB_COMP_EP0_BUFSIZ) {\n+\t\tif (ctrl->bRequestType == USB_DIR_OUT) {\n+\t\t\tgoto done;\n+\t\t} else {\n+\t\t\t/* Cast away the const, we are going to overwrite on purpose. */\n+\t\t\t__le16 *temp = (__le16 *)&ctrl->wLength;\n+\n+\t\t\t*temp = cpu_to_le16(USB_COMP_EP0_BUFSIZ);\n+\t\t\tw_length = USB_COMP_EP0_BUFSIZ;\n+\t\t}\n+\t}\n+\n \t/* partial re-init of the response message; the function or the\n \t * gadget might need to intercept e.g. a control-OUT completion\n \t * when we delegate to it."
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/usb/gadget/legacy/dbgp.c b/drivers/usb/gadget/legacy/dbgp.c\nindex e1d566c..e567afc 100644\n--- a/drivers/usb/gadget/legacy/dbgp.c\n+++ b/drivers/usb/gadget/legacy/dbgp.c",
+          "files": [
+            "/kernel/common/+/63fc70bffa16de431a51da7f530011de1b469780/drivers/usb/gadget/legacy/dbgp.c",
+            "/kernel/common/+/7193ad3e50e596ac2192531c58ba83b9e6d2444b/drivers/usb/gadget/legacy/dbgp.c"
+          ]
+        },
+        "diffUnified": "@@ -345,6 +345,19 @@\n \tvoid *data = NULL;\n \tu16 len = 0;\n \n+\tif (length > DBGP_REQ_LEN) {\n+\t\tif (ctrl->bRequestType == USB_DIR_OUT) {\n+\t\t\treturn err;\n+\t\t} else {\n+\t\t\t/* Cast away the const, we are going to overwrite on purpose. */\n+\t\t\t__le16 *temp = (__le16 *)&ctrl->wLength;\n+\n+\t\t\t*temp = cpu_to_le16(DBGP_REQ_LEN);\n+\t\t\tlength = DBGP_REQ_LEN;\n+\t\t}\n+\t}\n+\n+\n \tif (request == USB_REQ_GET_DESCRIPTOR) {\n \t\tswitch (value>>8) {\n \t\tcase USB_DT_DEVICE:"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/usb/gadget/legacy/inode.c b/drivers/usb/gadget/legacy/inode.c\nindex 71e7d10..04b9c4f 100644\n--- a/drivers/usb/gadget/legacy/inode.c\n+++ b/drivers/usb/gadget/legacy/inode.c",
+          "files": [
+            "/kernel/common/+/63fc70bffa16de431a51da7f530011de1b469780/drivers/usb/gadget/legacy/inode.c",
+            "/kernel/common/+/7193ad3e50e596ac2192531c58ba83b9e6d2444b/drivers/usb/gadget/legacy/inode.c"
+          ]
+        },
+        "diffUnified": "@@ -110,6 +110,8 @@\n /* enough for the whole queue: most events invalidate others */\n #define\tN_EVENT\t\t\t5\n \n+#define RBUF_SIZE\t\t256\n+\n struct dev_data {\n \tspinlock_t\t\t\tlock;\n \trefcount_t\t\t\tcount;\n@@ -144,7 +146,7 @@\n \tstruct dentry\t\t\t*dentry;\n \n \t/* except this scratch i/o buffer for ep0 */\n-\tu8\t\t\t\trbuf [256];\n+\tu8\t\t\t\trbuf[RBUF_SIZE];\n };\n \n static inline void get_dev (struct dev_data *data)\n@@ -1333,6 +1335,18 @@\n \tu16\t\t\t\tw_value = le16_to_cpu(ctrl->wValue);\n \tu16\t\t\t\tw_length = le16_to_cpu(ctrl->wLength);\n \n+\tif (w_length > RBUF_SIZE) {\n+\t\tif (ctrl->bRequestType == USB_DIR_OUT) {\n+\t\t\treturn value;\n+\t\t} else {\n+\t\t\t/* Cast away the const, we are going to overwrite on purpose. */\n+\t\t\t__le16 *temp = (__le16 *)&ctrl->wLength;\n+\n+\t\t\t*temp = cpu_to_le16(RBUF_SIZE);\n+\t\t\tw_length = RBUF_SIZE;\n+\t\t}\n+\t}\n+\n \tspin_lock (&dev->lock);\n \tdev->setup_abort = 0;\n \tif (dev->state == STATE_DEV_UNCONNECTED) {"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "Kernel"
+},
+{
+  "_id": {
+    "$oid": "65e017063ebf3743fee99bf6"
+  },
+  "CVE": "CVE-2022-1786",
+  "References": {
+    "text": "A-233078742\n        Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/812805ff3b0c7069dc94d4a031960b4e2c80beac",
+    "metaData": {
+      "commit": "812805ff3b0c7069dc94d4a031960b4e2c80beac",
+      "author": "Jens Axboe <axboe@kernel.dk>",
+      "committer": "Akilesh Kailash <akailash@google.com>",
+      "tree": "f01f46aa18ff4dbfc76483087ef85974efcbf8c2",
+      "parent": "b610eff230f2ce92fd48502d71ad0993792f73d3 [diff]"
+    },
+    "metadataMessage": "UPSTREAM: io_uring: always use original task when preparing req identity\n\nIf the ring is setup with IORING_SETUP_IOPOLL and we have more than\none task doing submissions on a ring, we can up in a situation where\nwe assign the context from the current task rather than the request\noriginator.\n\nAlways use req->task rather than assume it's the same as current.\n\nNo upstream patch exists for this issue, as only older kernels with\nthe non-native workers have this problem.\n\nBug: 233078742\nReported-by: Kyle Zeng <zengyhkyle@gmail.com>\nSigned-off-by: Jens Axboe <axboe@kernel.dk>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\nSigned-off-by: Akilesh Kailash <akailash@google.com>\n(cherry picked from commit 29f077d070519a88a793fbc70f1e6484dc6d9e35\n from linux-5.10.y stable branch)\nChange-Id: I4cc543950a95e1df201fa9867c5e9c272fd54b6f",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/fs/io_uring.c b/fs/io_uring.c\nindex fd188b9..d0c4928a 100644\n--- a/fs/io_uring.c\n+++ b/fs/io_uring.c",
+          "files": [
+            "/kernel/common/+/b610eff230f2ce92fd48502d71ad0993792f73d3/fs/io_uring.c",
+            "/kernel/common/+/812805ff3b0c7069dc94d4a031960b4e2c80beac/fs/io_uring.c"
+          ]
+        },
+        "diffUnified": "@@ -1156,7 +1156,7 @@\n  */\n static inline void io_req_init_async(struct io_kiocb *req)\n {\n-\tstruct io_uring_task *tctx = current->io_uring;\n+\tstruct io_uring_task *tctx = req->task->io_uring;\n \n \tif (req->flags & REQ_F_WORK_INITIALIZED)\n \t\treturn;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "Filesystem (fs)"
+},
+{
+  "_id": {
+    "$oid": "65e0171acf594247630d5139"
+  },
+  "CVE": "CVE-2022-20399",
+  "References": {
+    "text": "A-219808546\n        Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac",
+    "metaData": {
+      "commit": "9152b8d66c22c271e29ccfb381a121f1ec6eaeac",
+      "author": "Bram Bonné <brambonne@google.com>",
+      "committer": "Bram Bonné <brambonne@google.com>",
+      "tree": "39f0e0cce86eb8b14bba0649ef3b764af7177128",
+      "parent": "999dd0ba79796beafa13d52f9f168563f02c5fdc [diff]"
+    },
+    "metadataMessage": "ANDROID: selinux: modify RTM_GETNEIGH{TBL}\n\nMap the permission gating RTM_GETNEIGH/RTM_GETNEIGHTBL messages to a\nnew permission so that it can be distinguished from the other netlink\nroute permissions in selinux policy. The new permission is triggered by\na flag set in system images T and up.\n\nThis change is intended to be backported to all kernels that a T system\nimage can run on top of.\n\nBug: 171572148\nTest: atest NetworkInterfaceTest\nTest: atest CtsSelinuxTargetSdkCurrentTestCases\nTest: atest bionic-unit-tests-static\nTest: On Cuttlefish, run combinations of:\n    - Policy bit set or omitted (see https://r.android.com/1701847)\n    - This patch applied or omitted\n    - App having nlmsg_readneigh permission or not\n  Verify that only the combination of this patch + the policy bit being\n  set + the app not having the nlmsg_readneigh permission prevents the\n  app from sending RTM_GETNEIGH messages.\n\nChange-Id: I4bcfce4decb34ea9388eeedfc4be67403de8a980\nSigned-off-by: Bram Bonné <brambonne@google.com>\n(cherry picked from commit fac07550bdac9adea0dbe3edbdbec7a9a690a178)",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/security/selinux/include/classmap.h b/security/selinux/include/classmap.h\nindex f3ad0a7..955e8c8 100644\n--- a/security/selinux/include/classmap.h\n+++ b/security/selinux/include/classmap.h",
+          "files": [
+            "/kernel/common/+/999dd0ba79796beafa13d52f9f168563f02c5fdc/security/selinux/include/classmap.h",
+            "/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac/security/selinux/include/classmap.h"
+          ]
+        },
+        "diffUnified": "@@ -117,7 +117,8 @@\n \t  { COMMON_IPC_PERMS, NULL } },\n \t{ \"netlink_route_socket\",\n \t  { COMMON_SOCK_PERMS,\n-\t    \"nlmsg_read\", \"nlmsg_write\", \"nlmsg_readpriv\", NULL } },\n+\t    \"nlmsg_read\", \"nlmsg_write\", \"nlmsg_readpriv\", \"nlmsg_getneigh\",\n+\t    NULL } },\n \t{ \"netlink_tcpdiag_socket\",\n \t  { COMMON_SOCK_PERMS,\n \t    \"nlmsg_read\", \"nlmsg_write\", NULL } },"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/security/selinux/include/security.h b/security/selinux/include/security.h\nindex 0f7e1ae..a2c0cf6 100644\n--- a/security/selinux/include/security.h\n+++ b/security/selinux/include/security.h",
+          "files": [
+            "/kernel/common/+/999dd0ba79796beafa13d52f9f168563f02c5fdc/security/selinux/include/security.h",
+            "/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac/security/selinux/include/security.h"
+          ]
+        },
+        "diffUnified": "@@ -98,6 +98,7 @@\n \tbool initialized;\n \tbool policycap[__POLICYDB_CAPABILITY_MAX];\n \tbool android_netlink_route;\n+\tbool android_netlink_getneigh;\n \n \tstruct page *status_page;\n \tstruct mutex status_lock;\n@@ -227,6 +228,13 @@\n \treturn state->android_netlink_route;\n }\n \n+static inline bool selinux_android_nlroute_getneigh(void)\n+{\n+\tstruct selinux_state *state = &selinux_state;\n+\n+\treturn state->android_netlink_getneigh;\n+}\n+\n struct selinux_policy_convert_data;\n \n struct selinux_load_state {"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/security/selinux/nlmsgtab.c b/security/selinux/nlmsgtab.c\nindex 7968c2e..9ad6f9b 100644\n--- a/security/selinux/nlmsgtab.c\n+++ b/security/selinux/nlmsgtab.c",
+          "files": [
+            "/kernel/common/+/999dd0ba79796beafa13d52f9f168563f02c5fdc/security/selinux/nlmsgtab.c",
+            "/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac/security/selinux/nlmsgtab.c"
+          ]
+        },
+        "diffUnified": "@@ -212,12 +212,12 @@\n \treturn err;\n }\n \n-static void nlmsg_set_getlink_perm(u32 perm)\n+static void nlmsg_set_perm_for_type(u32 perm, u16 type)\n {\n \tint i;\n \n \tfor (i = 0; i < ARRAY_SIZE(nlmsg_route_perms); i++) {\n-\t\tif (nlmsg_route_perms[i].nlmsg_type == RTM_GETLINK) {\n+\t\tif (nlmsg_route_perms[i].nlmsg_type == type) {\n \t\t\tnlmsg_route_perms[i].perm = perm;\n \t\t\tbreak;\n \t\t}\n@@ -227,11 +227,27 @@\n /**\n  * Use nlmsg_readpriv as the permission for RTM_GETLINK messages if the\n  * netlink_route_getlink policy capability is set. Otherwise use nlmsg_read.\n+ * Similarly, use nlmsg_getneigh for RTM_GETNEIGH and RTM_GETNEIGHTBL if the\n+ * netlink_route_getneigh policy capability is set. Otherwise use nlmsg_read.\n  */\n void selinux_nlmsg_init(void)\n {\n \tif (selinux_android_nlroute_getlink())\n-\t\tnlmsg_set_getlink_perm(NETLINK_ROUTE_SOCKET__NLMSG_READPRIV);\n+\t\tnlmsg_set_perm_for_type(NETLINK_ROUTE_SOCKET__NLMSG_READPRIV,\n+\t\t\t\t\tRTM_GETLINK);\n \telse\n-\t\tnlmsg_set_getlink_perm(NETLINK_ROUTE_SOCKET__NLMSG_READ);\n+\t\tnlmsg_set_perm_for_type(NETLINK_ROUTE_SOCKET__NLMSG_READ,\n+\t\t\t\t\tRTM_GETLINK);\n+\n+\tif (selinux_android_nlroute_getneigh()) {\n+\t\tnlmsg_set_perm_for_type(NETLINK_ROUTE_SOCKET__NLMSG_GETNEIGH,\n+\t\t\t\t\tRTM_GETNEIGH);\n+\t\tnlmsg_set_perm_for_type(NETLINK_ROUTE_SOCKET__NLMSG_GETNEIGH,\n+\t\t\t\t\tRTM_GETNEIGHTBL);\n+\t} else {\n+\t\tnlmsg_set_perm_for_type(NETLINK_ROUTE_SOCKET__NLMSG_READ,\n+\t\t\t\t\tRTM_GETNEIGH);\n+\t\tnlmsg_set_perm_for_type(NETLINK_ROUTE_SOCKET__NLMSG_READ,\n+\t\t\t\t\tRTM_GETNEIGHTBL);\n+\t}\n }"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/security/selinux/ss/policydb.c b/security/selinux/ss/policydb.c\nindex ff5cc4b..572370c 100644\n--- a/security/selinux/ss/policydb.c\n+++ b/security/selinux/ss/policydb.c",
+          "files": [
+            "/kernel/common/+/999dd0ba79796beafa13d52f9f168563f02c5fdc/security/selinux/ss/policydb.c",
+            "/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac/security/selinux/ss/policydb.c"
+          ]
+        },
+        "diffUnified": "@@ -2497,6 +2497,10 @@\n \t\tp->android_netlink_route = 1;\n \t}\n \n+\tif ((le32_to_cpu(buf[1]) & POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH)) {\n+\t\tp->android_netlink_getneigh = 1;\n+\t}\n+\n \tif (p->policyvers >= POLICYDB_VERSION_POLCAP) {\n \t\trc = ebitmap_read(&p->policycaps, fp);\n \t\tif (rc)"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/security/selinux/ss/policydb.h b/security/selinux/ss/policydb.h\nindex 6bedec4..be9988e 100644\n--- a/security/selinux/ss/policydb.h\n+++ b/security/selinux/ss/policydb.h",
+          "files": [
+            "/kernel/common/+/999dd0ba79796beafa13d52f9f168563f02c5fdc/security/selinux/ss/policydb.h",
+            "/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac/security/selinux/ss/policydb.h"
+          ]
+        },
+        "diffUnified": "@@ -239,6 +239,7 @@\n struct policydb {\n \tint mls_enabled;\n \tint android_netlink_route;\n+\tint android_netlink_getneigh;\n \n \t/* symbol tables */\n \tstruct symtab symtab[SYM_NUM];\n@@ -336,6 +337,7 @@\n \n #define POLICYDB_CONFIG_MLS    1\n #define POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE    (1 << 31)\n+#define POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH (1 << 30)\n \n /* the config flags related to unknown classes/perms are bits 2 and 3 */\n #define REJECT_UNKNOWN\t0x00000002"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c\nindex 5d9b9d5..739c361 100644\n--- a/security/selinux/ss/services.c\n+++ b/security/selinux/ss/services.c",
+          "files": [
+            "/kernel/common/+/999dd0ba79796beafa13d52f9f168563f02c5fdc/security/selinux/ss/services.c",
+            "/kernel/common/+/9152b8d66c22c271e29ccfb381a121f1ec6eaeac/security/selinux/ss/services.c"
+          ]
+        },
+        "diffUnified": "@@ -2160,6 +2160,7 @@\n \t}\n \n \tstate->android_netlink_route = p->android_netlink_route;\n+\tstate->android_netlink_getneigh = p->android_netlink_getneigh;\n \tselinux_nlmsg_init();\n }"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "SELinux"
+},
+{
+  "_id": {
+    "$oid": "65e0172b762493db6127dfa6"
+  },
+  "CVE": "CVE-2022-20409",
+  "References": {
+    "text": "A-238177383\nUpstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/0380da7fd63ac93caf96a75d1b31e388d3c754e9",
+    "metaData": {
+      "commit": "0380da7fd63ac93caf96a75d1b31e388d3c754e9",
+      "author": "Lee Jones <lee@kernel.org>",
+      "committer": "Todd Kjos <tkjos@google.com>",
+      "tree": "d1b93bb1eb3b905ec5b0b286d9d68cc881f0facc",
+      "parent": "19bb609b45fbbab4cfd9a8765dc8cb9c90cfda34 [diff]"
+    },
+    "metadataMessage": "FROMGIT: io_uring: Use original task for req identity in io_identity_cow()\n\nThis issue is conceptually identical to the one fixed in 29f077d07051\n(\"io_uring: always use original task when preparing req identity\"), so\nrather than reinvent the wheel, I'm shamelessly quoting the commit\nmessage from that patch - thanks Jens:\n\n \"If the ring is setup with IORING_SETUP_IOPOLL and we have more than\n  one task doing submissions on a ring, we can up in a situation where\n  we assign the context from the current task rather than the request\n  originator.\n\n  Always use req->task rather than assume it's the same as current.\n\n  No upstream patch exists for this issue, as only older kernels with\n  the non-native workers have this problem.\"\n\nBug: 238177383\nCc: Jens Axboe <axboe@kernel.dk>\nCc: Pavel Begunkov <asml.silence@gmail.com>\nCc: Alexander Viro <viro@zeniv.linux.org.uk>\nCc: io-uring@vger.kernel.org\nCc: linux-fsdevel@vger.kernel.org\nFixes: 5c3462cfd123b (\"io_uring: store io_identity in io_uring_task\")\nSigned-off-by: Lee Jones <lee@kernel.org>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>\n(cherry picked from commit 2ee0cab11f6626071f8a64c7792406dabdd94c8d\ngit: //git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git linux-5.10.y)\nSigned-off-by: Lee Jones <joneslee@google.com>\nChange-Id: I98adc653dbe03f8e9d214d9430fe50d351a45910",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/fs/io_uring.c b/fs/io_uring.c\nindex 31551e9..b5fe826 100644\n--- a/fs/io_uring.c\n+++ b/fs/io_uring.c",
+          "files": [
+            "/kernel/common/+/19bb609b45fbbab4cfd9a8765dc8cb9c90cfda34/fs/io_uring.c",
+            "/kernel/common/+/0380da7fd63ac93caf96a75d1b31e388d3c754e9/fs/io_uring.c"
+          ]
+        },
+        "diffUnified": "@@ -1318,7 +1318,7 @@\n  */\n static bool io_identity_cow(struct io_kiocb *req)\n {\n-\tstruct io_uring_task *tctx = current->io_uring;\n+\tstruct io_uring_task *tctx = req->task->io_uring;\n \tconst struct cred *creds = NULL;\n \tstruct io_identity *id;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "Moderate",
+  "Component": "io_uring"
+},
+{
+  "_id": {
+    "$oid": "65e0174c1760832d0cdbbeb7"
+  },
+  "CVE": "CVE-2021-1050",
+  "References": {
+    "text": "A-243825200\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e0174c1760832d0cdbbeb8"
+  },
+  "CVE": "CVE-2021-39661",
+  "References": {
+    "text": "A-246824784\n     *",
+    "link": "#asterisk"
+  },
+  "Severity": "High",
+  "Subcomponent": "PowerVR-GPU"
+},
+{
+  "_id": {
+    "$oid": "65e017882699915b587c6240"
+  },
+  "CVE": "CVE-2020-10766",
+  "References": {
+    "text": "A-169505740\n    Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/dbbe2ad02e9df26e372f38cc3e70dab9222c832e",
+    "metaData": {
+      "commit": "dbbe2ad02e9df26e372f38cc3e70dab9222c832e",
+      "author": "Anthony Steinhauser <asteinhauser@google.com>",
+      "committer": "Thomas Gleixner <tglx@linutronix.de>",
+      "tree": "9dae22de3154359e6ce5c63034399d3baeb270b4",
+      "parent": "21998a351512eba4ed5969006f0c55882d995ada [diff]"
+    },
+    "metadataMessage": "x86/speculation: Prevent rogue cross-process SSBD shutdown\n\nOn context switch the change of TIF_SSBD and TIF_SPEC_IB are evaluated\nto adjust the mitigations accordingly. This is optimized to avoid the\nexpensive MSR write if not needed.\n\nThis optimization is buggy and allows an attacker to shutdown the SSBD\nprotection of a victim process.\n\nThe update logic reads the cached base value for the speculation control\nMSR which has neither the SSBD nor the STIBP bit set. It then OR's the\nSSBD bit only when TIF_SSBD is different and requests the MSR update.\n\nThat means if TIF_SSBD of the previous and next task are the same, then\nthe base value is not updated, even if TIF_SSBD is set. The MSR write is\nnot requested.\n\nSubsequently if the TIF_STIBP bit differs then the STIBP bit is updated\nin the base value and the MSR is written with a wrong SSBD value.\n\nThis was introduced when the per task/process conditional STIPB\nswitching was added on top of the existing SSBD switching.\n\nIt is exploitable if the attacker creates a process which enforces SSBD\nand has the contrary value of STIBP than the victim process (i.e. if the\nvictim process enforces STIBP, the attacker process must not enforce it;\nif the victim process does not enforce STIBP, the attacker process must\nenforce it) and schedule it on the same core as the victim process. If\nthe victim runs after the attacker the victim becomes vulnerable to\nSpectre V4.\n\nTo fix this, update the MSR value independent of the TIF_SSBD difference\nand dependent on the SSBD mitigation method available. This ensures that\na subsequent STIPB initiated MSR write has the correct state of SSBD.\n\n[ tglx: Handle X86_FEATURE_VIRT_SSBD & X86_FEATURE_VIRT_SSBD correctly\n        and massaged changelog ]\n\nFixes: 5bfbe3ad5840 (\"x86/speculation: Prepare for per task indirect branch speculation control\")\nSigned-off-by: Anthony Steinhauser <asteinhauser@google.com>\nSigned-off-by: Thomas Gleixner <tglx@linutronix.de>\nCc: stable@vger.kernel.org",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/kernel/process.c b/arch/x86/kernel/process.c\nindex 35638f1..8f4533c 100644\n--- a/arch/x86/kernel/process.c\n+++ b/arch/x86/kernel/process.c",
+          "files": [
+            "/kernel/common/+/21998a351512eba4ed5969006f0c55882d995ada/arch/x86/kernel/process.c",
+            "/kernel/common/+/dbbe2ad02e9df26e372f38cc3e70dab9222c832e/arch/x86/kernel/process.c"
+          ]
+        },
+        "diffUnified": "@@ -545,28 +545,20 @@\n \n \tlockdep_assert_irqs_disabled();\n \n-\t/*\n-\t * If TIF_SSBD is different, select the proper mitigation\n-\t * method. Note that if SSBD mitigation is disabled or permanentely\n-\t * enabled this branch can't be taken because nothing can set\n-\t * TIF_SSBD.\n-\t */\n-\tif (tif_diff & _TIF_SSBD) {\n-\t\tif (static_cpu_has(X86_FEATURE_VIRT_SSBD)) {\n+\t/* Handle change of TIF_SSBD depending on the mitigation method. */\n+\tif (static_cpu_has(X86_FEATURE_VIRT_SSBD)) {\n+\t\tif (tif_diff & _TIF_SSBD)\n \t\t\tamd_set_ssb_virt_state(tifn);\n-\t\t} else if (static_cpu_has(X86_FEATURE_LS_CFG_SSBD)) {\n+\t} else if (static_cpu_has(X86_FEATURE_LS_CFG_SSBD)) {\n+\t\tif (tif_diff & _TIF_SSBD)\n \t\t\tamd_set_core_ssb_state(tifn);\n-\t\t} else if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||\n-\t\t\t   static_cpu_has(X86_FEATURE_AMD_SSBD)) {\n-\t\t\tmsr |= ssbd_tif_to_spec_ctrl(tifn);\n-\t\t\tupdmsr  = true;\n-\t\t}\n+\t} else if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||\n+\t\t   static_cpu_has(X86_FEATURE_AMD_SSBD)) {\n+\t\tupdmsr |= !!(tif_diff & _TIF_SSBD);\n+\t\tmsr |= ssbd_tif_to_spec_ctrl(tifn);\n \t}\n \n-\t/*\n-\t * Only evaluate TIF_SPEC_IB if conditional STIBP is enabled,\n-\t * otherwise avoid the MSR write.\n-\t */\n+\t/* Only evaluate TIF_SPEC_IB if conditional STIBP is enabled. */\n \tif (IS_ENABLED(CONFIG_SMP) &&\n \t    static_branch_unlikely(&switch_to_cond_stibp)) {\n \t\tupdmsr |= !!(tif_diff & _TIF_SPEC_IB);"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "Speculative execution"
+},
+{
+  "_id": {
+    "$oid": "65e017882699915b587c6241"
+  },
+  "CVE": "CVE-2020-10767",
+  "References": {
+    "text": "A-156766097\n    Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/21998a351512eba4ed5969006f0c55882d995ada",
+    "metaData": {
+      "commit": "21998a351512eba4ed5969006f0c55882d995ada",
+      "author": "Anthony Steinhauser <asteinhauser@google.com>",
+      "committer": "Thomas Gleixner <tglx@linutronix.de>",
+      "tree": "725711649d7ea4ec31c2020a7f0caa46ff4fd2b3",
+      "parent": "be25d1b5ea6a3a3ecbb5474e2ae8e32d2ba055ea [diff]"
+    },
+    "metadataMessage": "x86/speculation: Avoid force-disabling IBPB based on STIBP and enhanced IBRS.\n\nWhen STIBP is unavailable or enhanced IBRS is available, Linux\nforce-disables the IBPB mitigation of Spectre-BTB even when simultaneous\nmultithreading is disabled. While attempts to enable IBPB using\nprctl(PR_SET_SPECULATION_CTRL, PR_SPEC_INDIRECT_BRANCH, ...) fail with\nEPERM, the seccomp syscall (or its prctl(PR_SET_SECCOMP, ...) equivalent)\nwhich are used e.g. by Chromium or OpenSSH succeed with no errors but the\napplication remains silently vulnerable to cross-process Spectre v2 attacks\n(classical BTB poisoning). At the same time the SYSFS reporting\n(/sys/devices/system/cpu/vulnerabilities/spectre_v2) displays that IBPB is\nconditionally enabled when in fact it is unconditionally disabled.\n\nSTIBP is useful only when SMT is enabled. When SMT is disabled and STIBP is\nunavailable, it makes no sense to force-disable also IBPB, because IBPB\nprotects against cross-process Spectre-BTB attacks regardless of the SMT\nstate. At the same time since missing STIBP was only observed on AMD CPUs,\nAMD does not recommend using STIBP, but recommends using IBPB, so disabling\nIBPB because of missing STIBP goes directly against AMD's advice:\nhttps://developer.amd.com/wp-content/resources/Architecture_Guidelines_Update_Indirect_Branch_Control.pdf\n\nSimilarly, enhanced IBRS is designed to protect cross-core BTB poisoning\nand BTB-poisoning attacks from user space against kernel (and\nBTB-poisoning attacks from guest against hypervisor), it is not designed\nto prevent cross-process (or cross-VM) BTB poisoning between processes (or\nVMs) running on the same core. Therefore, even with enhanced IBRS it is\nnecessary to flush the BTB during context-switches, so there is no reason\nto force disable IBPB when enhanced IBRS is available.\n\nEnable the prctl control of IBPB even when STIBP is unavailable or enhanced\nIBRS is available.\n\nFixes: 7cc765a67d8e (\"x86/speculation: Enable prctl mode for spectre_v2_user\")\nSigned-off-by: Anthony Steinhauser <asteinhauser@google.com>\nSigned-off-by: Thomas Gleixner <tglx@linutronix.de>\nCc: stable@vger.kernel.org",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/kernel/cpu/bugs.c b/arch/x86/kernel/cpu/bugs.c\nindex ed54b3b..8d57562 100644\n--- a/arch/x86/kernel/cpu/bugs.c\n+++ b/arch/x86/kernel/cpu/bugs.c",
+          "files": [
+            "/kernel/common/+/be25d1b5ea6a3a3ecbb5474e2ae8e32d2ba055ea/arch/x86/kernel/cpu/bugs.c",
+            "/kernel/common/+/21998a351512eba4ed5969006f0c55882d995ada/arch/x86/kernel/cpu/bugs.c"
+          ]
+        },
+        "diffUnified": "@@ -495,7 +495,9 @@\n static enum spectre_v2_mitigation spectre_v2_enabled __ro_after_init =\n \tSPECTRE_V2_NONE;\n \n-static enum spectre_v2_user_mitigation spectre_v2_user __ro_after_init =\n+static enum spectre_v2_user_mitigation spectre_v2_user_stibp __ro_after_init =\n+\tSPECTRE_V2_USER_NONE;\n+static enum spectre_v2_user_mitigation spectre_v2_user_ibpb __ro_after_init =\n \tSPECTRE_V2_USER_NONE;\n \n #ifdef CONFIG_RETPOLINE\n@@ -641,15 +643,6 @@\n \t\tbreak;\n \t}\n \n-\t/*\n-\t * At this point, an STIBP mode other than \"off\" has been set.\n-\t * If STIBP support is not being forced, check if STIBP always-on\n-\t * is preferred.\n-\t */\n-\tif (mode != SPECTRE_V2_USER_STRICT &&\n-\t    boot_cpu_has(X86_FEATURE_AMD_STIBP_ALWAYS_ON))\n-\t\tmode = SPECTRE_V2_USER_STRICT_PREFERRED;\n-\n \t/* Initialize Indirect Branch Prediction Barrier */\n \tif (boot_cpu_has(X86_FEATURE_IBPB)) {\n \t\tsetup_force_cpu_cap(X86_FEATURE_USE_IBPB);\n@@ -672,23 +665,36 @@\n \t\tpr_info(\"mitigation: Enabling %s Indirect Branch Prediction Barrier\\n\",\n \t\t\tstatic_key_enabled(&switch_mm_always_ibpb) ?\n \t\t\t\"always-on\" : \"conditional\");\n+\n+\t\tspectre_v2_user_ibpb = mode;\n \t}\n \n-\t/* If enhanced IBRS is enabled no STIBP required */\n-\tif (spectre_v2_enabled == SPECTRE_V2_IBRS_ENHANCED)\n+\t/*\n+\t * If enhanced IBRS is enabled or SMT impossible, STIBP is not\n+\t * required.\n+\t */\n+\tif (!smt_possible || spectre_v2_enabled == SPECTRE_V2_IBRS_ENHANCED)\n \t\treturn;\n \n \t/*\n-\t * If SMT is not possible or STIBP is not available clear the STIBP\n-\t * mode.\n+\t * At this point, an STIBP mode other than \"off\" has been set.\n+\t * If STIBP support is not being forced, check if STIBP always-on\n+\t * is preferred.\n \t */\n-\tif (!smt_possible || !boot_cpu_has(X86_FEATURE_STIBP))\n+\tif (mode != SPECTRE_V2_USER_STRICT &&\n+\t    boot_cpu_has(X86_FEATURE_AMD_STIBP_ALWAYS_ON))\n+\t\tmode = SPECTRE_V2_USER_STRICT_PREFERRED;\n+\n+\t/*\n+\t * If STIBP is not available, clear the STIBP mode.\n+\t */\n+\tif (!boot_cpu_has(X86_FEATURE_STIBP))\n \t\tmode = SPECTRE_V2_USER_NONE;\n+\n+\tspectre_v2_user_stibp = mode;\n+\n set_mode:\n-\tspectre_v2_user = mode;\n-\t/* Only print the STIBP mode when SMT possible */\n-\tif (smt_possible)\n-\t\tpr_info(\"%s\\n\", spectre_v2_user_strings[mode]);\n+\tpr_info(\"%s\\n\", spectre_v2_user_strings[mode]);\n }\n \n static const char * const spectre_v2_strings[] = {\n@@ -921,7 +927,7 @@\n {\n \tmutex_lock(&spec_ctrl_mutex);\n \n-\tswitch (spectre_v2_user) {\n+\tswitch (spectre_v2_user_stibp) {\n \tcase SPECTRE_V2_USER_NONE:\n \t\tbreak;\n \tcase SPECTRE_V2_USER_STRICT:\n@@ -1164,14 +1170,16 @@\n {\n \tswitch (ctrl) {\n \tcase PR_SPEC_ENABLE:\n-\t\tif (spectre_v2_user == SPECTRE_V2_USER_NONE)\n+\t\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_NONE &&\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_NONE)\n \t\t\treturn 0;\n \t\t/*\n \t\t * Indirect branch speculation is always disabled in strict\n \t\t * mode.\n \t\t */\n-\t\tif (spectre_v2_user == SPECTRE_V2_USER_STRICT ||\n-\t\t    spectre_v2_user == SPECTRE_V2_USER_STRICT_PREFERRED)\n+\t\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_STRICT ||\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED)\n \t\t\treturn -EPERM;\n \t\ttask_clear_spec_ib_disable(task);\n \t\ttask_update_spec_tif(task);\n@@ -1182,10 +1190,12 @@\n \t\t * Indirect branch speculation is always allowed when\n \t\t * mitigation is force disabled.\n \t\t */\n-\t\tif (spectre_v2_user == SPECTRE_V2_USER_NONE)\n+\t\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_NONE &&\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_NONE)\n \t\t\treturn -EPERM;\n-\t\tif (spectre_v2_user == SPECTRE_V2_USER_STRICT ||\n-\t\t    spectre_v2_user == SPECTRE_V2_USER_STRICT_PREFERRED)\n+\t\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_STRICT ||\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED)\n \t\t\treturn 0;\n \t\ttask_set_spec_ib_disable(task);\n \t\tif (ctrl == PR_SPEC_FORCE_DISABLE)\n@@ -1216,7 +1226,8 @@\n {\n \tif (ssb_mode == SPEC_STORE_BYPASS_SECCOMP)\n \t\tssb_prctl_set(task, PR_SPEC_FORCE_DISABLE);\n-\tif (spectre_v2_user == SPECTRE_V2_USER_SECCOMP)\n+\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_SECCOMP ||\n+\t    spectre_v2_user_stibp == SPECTRE_V2_USER_SECCOMP)\n \t\tib_prctl_set(task, PR_SPEC_FORCE_DISABLE);\n }\n #endif\n@@ -1247,22 +1258,24 @@\n \tif (!boot_cpu_has_bug(X86_BUG_SPECTRE_V2))\n \t\treturn PR_SPEC_NOT_AFFECTED;\n \n-\tswitch (spectre_v2_user) {\n-\tcase SPECTRE_V2_USER_NONE:\n+\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_NONE &&\n+\t    spectre_v2_user_stibp == SPECTRE_V2_USER_NONE)\n \t\treturn PR_SPEC_ENABLE;\n-\tcase SPECTRE_V2_USER_PRCTL:\n-\tcase SPECTRE_V2_USER_SECCOMP:\n+\telse if (spectre_v2_user_ibpb == SPECTRE_V2_USER_STRICT ||\n+\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||\n+\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED)\n+\t\treturn PR_SPEC_DISABLE;\n+\telse if (spectre_v2_user_ibpb == SPECTRE_V2_USER_PRCTL ||\n+\t    spectre_v2_user_ibpb == SPECTRE_V2_USER_SECCOMP ||\n+\t    spectre_v2_user_stibp == SPECTRE_V2_USER_PRCTL ||\n+\t    spectre_v2_user_stibp == SPECTRE_V2_USER_SECCOMP) {\n \t\tif (task_spec_ib_force_disable(task))\n \t\t\treturn PR_SPEC_PRCTL | PR_SPEC_FORCE_DISABLE;\n \t\tif (task_spec_ib_disable(task))\n \t\t\treturn PR_SPEC_PRCTL | PR_SPEC_DISABLE;\n \t\treturn PR_SPEC_PRCTL | PR_SPEC_ENABLE;\n-\tcase SPECTRE_V2_USER_STRICT:\n-\tcase SPECTRE_V2_USER_STRICT_PREFERRED:\n-\t\treturn PR_SPEC_DISABLE;\n-\tdefault:\n+\t} else\n \t\treturn PR_SPEC_NOT_AFFECTED;\n-\t}\n }\n \n int arch_prctl_spec_ctrl_get(struct task_struct *task, unsigned long which)\n@@ -1501,7 +1514,7 @@\n \tif (spectre_v2_enabled == SPECTRE_V2_IBRS_ENHANCED)\n \t\treturn \"\";\n \n-\tswitch (spectre_v2_user) {\n+\tswitch (spectre_v2_user_stibp) {\n \tcase SPECTRE_V2_USER_NONE:\n \t\treturn \", STIBP: disabled\";\n \tcase SPECTRE_V2_USER_STRICT:"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "Linux kernel"
+},
+{
+  "_id": {
+    "$oid": "65e017882699915b587c6242"
+  },
+  "CVE": "CVE-2020-10732",
+  "References": {
+    "text": "A-170658976\n    Upstream kernel",
+    "link": "http://android.googlesource.com/kernel/common/+/1d605416fb7175e1adf094251466caa52093b413",
+    "metaData": {
+      "commit": "1d605416fb7175e1adf094251466caa52093b413",
+      "author": "Alexander Potapenko <glider@google.com>",
+      "committer": "Linus Torvalds <torvalds@linux-foundation.org>",
+      "tree": "0116d920c5facf13b63774d9e9a9248748075924",
+      "parent": "6988f31d558aa8c744464a7f6d91d34ada48ad12 [diff]"
+    },
+    "metadataMessage": "fs/binfmt_elf.c: allocate initialized memory in fill_thread_core_info()\n\nKMSAN reported uninitialized data being written to disk when dumping\ncore.  As a result, several kilobytes of kmalloc memory may be written\nto the core file and then read by a non-privileged user.\n\nReported-by: sam <sunhaoyl@outlook.com>\nSigned-off-by: Alexander Potapenko <glider@google.com>\nSigned-off-by: Andrew Morton <akpm@linux-foundation.org>\nAcked-by: Kees Cook <keescook@chromium.org>\nCc: Al Viro <viro@zeniv.linux.org.uk>\nCc: Alexey Dobriyan <adobriyan@gmail.com>\nCc: <stable@vger.kernel.org>\nLink: http://lkml.kernel.org/r/20200419100848.63472-1-glider@google.com\nLink: https://github.com/google/kmsan/issues/76\nSigned-off-by: Linus Torvalds <torvalds@linux-foundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/fs/binfmt_elf.c b/fs/binfmt_elf.c\nindex 13f25e2..25d489b 100644\n--- a/fs/binfmt_elf.c\n+++ b/fs/binfmt_elf.c",
+          "files": [
+            "/kernel/common/+/6988f31d558aa8c744464a7f6d91d34ada48ad12/fs/binfmt_elf.c",
+            "/kernel/common/+/1d605416fb7175e1adf094251466caa52093b413/fs/binfmt_elf.c"
+          ]
+        },
+        "diffUnified": "@@ -1733,7 +1733,7 @@\n \t\t    (!regset->active || regset->active(t->task, regset) > 0)) {\n \t\t\tint ret;\n \t\t\tsize_t size = regset_size(t->task, regset);\n-\t\t\tvoid *data = kmalloc(size, GFP_KERNEL);\n+\t\t\tvoid *data = kzalloc(size, GFP_KERNEL);\n \t\t\tif (unlikely(!data))\n \t\t\t\treturn 0;\n \t\t\tret = regset->get(t->task, regset,"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "ELF core dumps"
+},
+{
+  "_id": {
+    "$oid": "65e017f62d85916a9022468d"
+  },
+  "CVE": "CVE-2021-0399",
+  "References": {
+    "text": "A-176919394\n        Upstream kernel [2] [3] [4] [5] [6] [7] [8]",
+    "link": "https://android.googlesource.com/kernel/common/+/c2ab93b45b5cdc426868fb8793ada2cac20568ef",
+    "metaData": {
+      "commit": "c2ab93b45b5cdc426868fb8793ada2cac20568ef",
+      "author": "Kalesh Singh <kaleshsingh@google.com>",
+      "committer": "Kalesh Singh <kaleshsingh@google.com>",
+      "tree": "af266ea550df73f291edce1508c7b144588a33f4",
+      "parent": "5b71d910cb54007b08b0d5258594fa9dabf74d06 [diff]"
+    },
+    "metadataMessage": "ANDROID: xt_qtaguid: Remove tag_entry from process list on untag\n\nA sock_tag_entry can only be part of one process's\npqd_entry->sock_tag_list. Retagging the socket only updates\nsock_tag_entry->tag, and does not add the tag entry to the current\nprocess's pqd_entry list, nor update sock_tag_entry->pid.\nSo the sock_tag_entry is only ever present in the\npqd_entry list of the process that initially tagged the socket.\n\nA sock_tag_entry can also get created and not be added to any process's\npqd_entry list. This happens if the process that initially tags the\nsocket has not opened /dev/xt_qtaguid.\n\nctrl_cmd_untag() supports untagging from a context other than the\nprocess that initially tagged the socket. Currently, the sock_tag_entry is\nonly removed from its containing pqd_entry->sock_tag_list if the\nprocess that does the untagging has opened /dev/xt_qtaguid. However, the\ntag entry should always be deleted from its pqd entry list (if present).\n\nBug: 176919394\nSigned-off-by: Kalesh Singh <kaleshsingh@google.com>\nChange-Id: I5b6f0c36c0ebefd98cc6873a4057104c7d885ccc",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/net/netfilter/xt_qtaguid.c b/net/netfilter/xt_qtaguid.c\nindex dffa245..4e6c684 100644\n--- a/net/netfilter/xt_qtaguid.c\n+++ b/net/netfilter/xt_qtaguid.c",
+          "files": [
+            "/kernel/common/+/5b71d910cb54007b08b0d5258594fa9dabf74d06/net/netfilter/xt_qtaguid.c",
+            "/kernel/common/+/c2ab93b45b5cdc426868fb8793ada2cac20568ef/net/netfilter/xt_qtaguid.c"
+          ]
+        },
+        "diffUnified": "@@ -2412,15 +2412,20 @@\n \t * At first, we want to catch user-space code that is not\n \t * opening the /dev/xt_qtaguid.\n \t */\n-\tif (IS_ERR_OR_NULL(pqd_entry) || !sock_tag_entry->list.next) {\n+\tif (IS_ERR_OR_NULL(pqd_entry))\n \t\tpr_warn_once(\"qtaguid: %s(): \"\n \t\t\t     \"User space forgot to open /dev/xt_qtaguid? \"\n \t\t\t     \"pid=%u tgid=%u sk_pid=%u, uid=%u\\n\", __func__,\n \t\t\t     current->pid, current->tgid, sock_tag_entry->pid,\n \t\t\t     from_kuid(&init_user_ns, current_fsuid()));\n-\t} else {\n+\t/*\n+\t * This check is needed because tagging from a process that\n+\t * didn’t open /dev/xt_qtaguid still adds the sock_tag_entry\n+\t * to sock_tag_tree.\n+\t */\n+\tif (sock_tag_entry->list.next)\n \t\tlist_del(&sock_tag_entry->list);\n-\t}\n+\n \tspin_unlock_bh(&uid_tag_data_tree_lock);\n \t/*\n \t * We don't free tag_ref from the utd_entry here,"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "xt_qtaguid"
+},
+{
+  "_id": {
+    "$oid": "65e0185d37216003e3f867e5"
+  },
+  "CVE": "CVE-2020-29661",
+  "References": {
+    "text": "A-175451802\n    Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/54ffccbf053b5b6ca4f6e45094b942fab92a25fc",
+    "metaData": {
+      "commit": "54ffccbf053b5b6ca4f6e45094b942fab92a25fc",
+      "author": "Jann Horn <jannh@google.com>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "b30e76730582ec6960a35741dea3023040afbaf0",
+      "parent": "418baf2c28f3473039f2f7377760bd8f6897ae18 [diff]"
+    },
+    "metadataMessage": "tty: Fix ->pgrp locking in tiocspgrp()\n\ntiocspgrp() takes two tty_struct pointers: One to the tty that userspace\npassed to ioctl() (`tty`) and one to the TTY being changed (`real_tty`).\nThese pointers are different when ioctl() is called with a master fd.\n\nTo properly lock real_tty->pgrp, we must take real_tty->ctrl_lock.\n\nThis bug makes it possible for racing ioctl(TIOCSPGRP, ...) calls on\nboth sides of a PTY pair to corrupt the refcount of `struct pid`,\nleading to use-after-free errors.\n\nFixes: 47f86834bbd4 (\"redo locking of tty->pgrp\")\nCC: stable@kernel.org\nSigned-off-by: Jann Horn <jannh@google.com>\nReviewed-by: Jiri Slaby <jirislaby@kernel.org>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/tty/tty_jobctrl.c b/drivers/tty/tty_jobctrl.c\nindex 28a23a0..baadeea 100644\n--- a/drivers/tty/tty_jobctrl.c\n+++ b/drivers/tty/tty_jobctrl.c",
+          "files": [
+            "/kernel/common/+/418baf2c28f3473039f2f7377760bd8f6897ae18/drivers/tty/tty_jobctrl.c",
+            "/kernel/common/+/54ffccbf053b5b6ca4f6e45094b942fab92a25fc/drivers/tty/tty_jobctrl.c"
+          ]
+        },
+        "diffUnified": "@@ -494,10 +494,10 @@\n \tif (session_of_pgrp(pgrp) != task_session(current))\n \t\tgoto out_unlock;\n \tretval = 0;\n-\tspin_lock_irq(&tty->ctrl_lock);\n+\tspin_lock_irq(&real_tty->ctrl_lock);\n \tput_pid(real_tty->pgrp);\n \treal_tty->pgrp = get_pid(pgrp);\n-\tspin_unlock_irq(&tty->ctrl_lock);\n+\tspin_unlock_irq(&real_tty->ctrl_lock);\n out_unlock:\n \trcu_read_unlock();\n \treturn retval;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "TTY"
+},
+{
+  "_id": {
+    "$oid": "65e018926248df0d3d99e373"
+  },
+  "CVE": "CVE-2021-0513",
+  "References": {
+    "text": "A-156090809",
+    "link": "https://android.googlesource.com/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad",
+    "metaData": {
+      "commit": "8cb7e0a881fed2a7d80b69aed77275bd483043ad",
+      "author": "Christopher Tate <ctate@google.com>",
+      "committer": "Christopher Tate <ctate@google.com>",
+      "tree": "3f38084b69b607b3ef5a183f07ce6fc08fa13be6",
+      "parent": "e75b482280d41a893e5d525864c07bd7cd59a7ef [diff]"
+    },
+    "metadataMessage": "DO NOT MERGE - Disallow deletion of channels with FGS notifications\n\nBug: 156090809\nTest: atest CtsAppTestCases:NotificationManagerTest\nTest: atest CtsAppTestCases:android.app.cts.ServiceTest\nChange-Id: I1c2bb78d86f194585d273661cecf3419f51965df\n(cherry picked from commit 39b3890268913bc2dc8b90671d042c0e9b4090d2)",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/core/java/android/app/ActivityManagerInternal.java b/core/java/android/app/ActivityManagerInternal.java\nindex a5965bc..fcb5e0b 100644\n--- a/core/java/android/app/ActivityManagerInternal.java\n+++ b/core/java/android/app/ActivityManagerInternal.java",
+          "files": [
+            "/platform/frameworks/base/+/e75b482280d41a893e5d525864c07bd7cd59a7ef/core/java/android/app/ActivityManagerInternal.java",
+            "/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad/core/java/android/app/ActivityManagerInternal.java"
+          ]
+        },
+        "diffUnified": "@@ -378,6 +378,21 @@\n     public abstract boolean hasRunningForegroundService(int uid, int foregroundServiceType);\n \n     /**\n+     * Returns {@code true} if the given notification channel currently has a\n+     * notification associated with a foreground service.  This is an AMS check\n+     * because that is the source of truth for the FGS state.\n+     */\n+    public abstract boolean hasForegroundServiceNotification(String pkg, @UserIdInt int userId,\n+            String channelId);\n+\n+    /**\n+     * If the given app has any FGSs whose notifications are in the given channel,\n+     * stop them.\n+     */\n+    public abstract void stopForegroundServicesForChannel(String pkg, @UserIdInt int userId,\n+            String channelId);\n+\n+    /**\n      * Registers the specified {@code processObserver} to be notified of future changes to\n      * process state.\n      */"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/services/core/java/com/android/server/am/ActiveServices.java b/services/core/java/com/android/server/am/ActiveServices.java\nindex dd0e1f6..b8de4a75 100644\n--- a/services/core/java/com/android/server/am/ActiveServices.java\n+++ b/services/core/java/com/android/server/am/ActiveServices.java",
+          "files": [
+            "/platform/frameworks/base/+/e75b482280d41a893e5d525864c07bd7cd59a7ef/services/core/java/com/android/server/am/ActiveServices.java",
+            "/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad/services/core/java/com/android/server/am/ActiveServices.java"
+          ]
+        },
+        "diffUnified": "@@ -119,6 +119,7 @@\n import java.util.ArrayList;\n import java.util.Comparator;\n import java.util.List;\n+import java.util.Objects;\n import java.util.Set;\n import java.util.function.Predicate;\n \n@@ -433,6 +434,45 @@\n         return smap != null ? smap.mStartingBackground.size() >= mMaxStartingBackground : false;\n     }\n \n+    boolean hasForegroundServiceNotificationLocked(String pkg, int userId, String channelId) {\n+        final ServiceMap smap = mServiceMap.get(userId);\n+        if (smap != null) {\n+            for (int i = 0; i < smap.mServicesByInstanceName.size(); i++) {\n+                final ServiceRecord sr = smap.mServicesByInstanceName.valueAt(i);\n+                if (sr.appInfo.packageName.equals(pkg) && sr.isForeground) {\n+                    if (Objects.equals(sr.foregroundNoti.getChannelId(), channelId)) {\n+                        if (DEBUG_FOREGROUND_SERVICE) {\n+                            Slog.d(TAG_SERVICE, \"Channel u\" + userId + \"/pkg=\" + pkg\n+                                    + \"/channelId=\" + channelId\n+                                    + \" has fg service notification\");\n+                        }\n+                        return true;\n+                    }\n+                }\n+            }\n+        }\n+        return false;\n+    }\n+\n+    void stopForegroundServicesForChannelLocked(String pkg, int userId, String channelId) {\n+        final ServiceMap smap = mServiceMap.get(userId);\n+        if (smap != null) {\n+            for (int i = 0; i < smap.mServicesByInstanceName.size(); i++) {\n+                final ServiceRecord sr = smap.mServicesByInstanceName.valueAt(i);\n+                if (sr.appInfo.packageName.equals(pkg) && sr.isForeground) {\n+                    if (Objects.equals(sr.foregroundNoti.getChannelId(), channelId)) {\n+                        if (DEBUG_FOREGROUND_SERVICE) {\n+                            Slog.d(TAG_SERVICE, \"Stopping FGS u\" + userId + \"/pkg=\" + pkg\n+                                    + \"/channelId=\" + channelId\n+                                    + \" for conversation channel clear\");\n+                        }\n+                        stopServiceLocked(sr);\n+                    }\n+                }\n+            }\n+        }\n+    }\n+\n     private ServiceMap getServiceMapLocked(int callingUser) {\n         ServiceMap smap = mServiceMap.get(callingUser);\n         if (smap == null) {"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/services/core/java/com/android/server/am/ActivityManagerService.java b/services/core/java/com/android/server/am/ActivityManagerService.java\nindex 67c64e9..28c9e49 100644\n--- a/services/core/java/com/android/server/am/ActivityManagerService.java\n+++ b/services/core/java/com/android/server/am/ActivityManagerService.java",
+          "files": [
+            "/platform/frameworks/base/+/e75b482280d41a893e5d525864c07bd7cd59a7ef/services/core/java/com/android/server/am/ActivityManagerService.java",
+            "/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad/services/core/java/com/android/server/am/ActivityManagerService.java"
+          ]
+        },
+        "diffUnified": "@@ -19731,6 +19731,22 @@\n         }\n \n         @Override\n+        public boolean hasForegroundServiceNotification(String pkg, int userId,\n+                String channelId) {\n+            synchronized (ActivityManagerService.this) {\n+                return mServices.hasForegroundServiceNotificationLocked(pkg, userId, channelId);\n+            }\n+        }\n+\n+        @Override\n+        public void stopForegroundServicesForChannel(String pkg, int userId,\n+                String channelId) {\n+            synchronized (ActivityManagerService.this) {\n+                mServices.stopForegroundServicesForChannelLocked(pkg, userId, channelId);\n+            }\n+        }\n+\n+        @Override\n         public void registerProcessObserver(IProcessObserver processObserver) {\n             ActivityManagerService.this.registerProcessObserver(processObserver);\n         }"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/services/core/java/com/android/server/notification/NotificationManagerService.java b/services/core/java/com/android/server/notification/NotificationManagerService.java\nindex e94507b..65b3221 100755\n--- a/services/core/java/com/android/server/notification/NotificationManagerService.java\n+++ b/services/core/java/com/android/server/notification/NotificationManagerService.java",
+          "files": [
+            "/platform/frameworks/base/+/e75b482280d41a893e5d525864c07bd7cd59a7ef/services/core/java/com/android/server/notification/NotificationManagerService.java",
+            "/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad/services/core/java/com/android/server/notification/NotificationManagerService.java"
+          ]
+        },
+        "diffUnified": "@@ -402,6 +402,7 @@\n     private IActivityManager mAm;\n     private ActivityTaskManagerInternal mAtm;\n     private ActivityManager mActivityManager;\n+    private ActivityManagerInternal mAmi;\n     private IPackageManager mPackageManager;\n     private PackageManager mPackageManagerClient;\n     AudioManager mAudioManager;\n@@ -1875,7 +1876,7 @@\n             DevicePolicyManagerInternal dpm, IUriGrantsManager ugm,\n             UriGrantsManagerInternal ugmInternal, AppOpsManager appOps, UserManager userManager,\n             NotificationHistoryManager historyManager, StatsManager statsManager,\n-            TelephonyManager telephonyManager) {\n+            TelephonyManager telephonyManager, ActivityManagerInternal ami) {\n         mHandler = handler;\n         Resources resources = getContext().getResources();\n         mMaxPackageEnqueueRate = Settings.Global.getFloat(getContext().getContentResolver(),\n@@ -1896,6 +1897,7 @@\n         mAlarmManager = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);\n         mCompanionManager = companionManager;\n         mActivityManager = activityManager;\n+        mAmi = ami;\n         mDeviceIdleController = IDeviceIdleController.Stub.asInterface(\n                 ServiceManager.getService(Context.DEVICE_IDLE_CONTROLLER));\n         mDpm = dpm;\n@@ -2111,7 +2113,8 @@\n                 new NotificationHistoryManager(getContext(), handler),\n                 mStatsManager = (StatsManager) getContext().getSystemService(\n                         Context.STATS_MANAGER),\n-                getContext().getSystemService(TelephonyManager.class));\n+                getContext().getSystemService(TelephonyManager.class),\n+                LocalServices.getService(ActivityManagerInternal.class));\n \n         // register for various Intents\n         IntentFilter filter = new IntentFilter();\n@@ -3395,15 +3398,30 @@\n                     pkg, uid, channelId, conversationId, true, includeDeleted);\n         }\n \n+        // Returns 'true' if the given channel has a notification associated\n+        // with an active foreground service.\n+        private void enforceDeletingChannelHasNoFgService(String pkg, int userId,\n+                String channelId) {\n+            if (mAmi.hasForegroundServiceNotification(pkg, userId, channelId)) {\n+                Slog.w(TAG, \"Package u\" + userId + \"/\" + pkg\n+                        + \" may not delete notification channel '\"\n+                        + channelId + \"' with fg service\");\n+                throw new SecurityException(\"Not allowed to delete channel \" + channelId\n+                        + \" with a foreground service\");\n+            }\n+        }\n+\n         @Override\n         public void deleteNotificationChannel(String pkg, String channelId) {\n             checkCallerIsSystemOrSameApp(pkg);\n             final int callingUid = Binder.getCallingUid();\n+            final int callingUser = UserHandle.getUserId(callingUid);\n             if (NotificationChannel.DEFAULT_CHANNEL_ID.equals(channelId)) {\n                 throw new IllegalArgumentException(\"Cannot delete default channel\");\n             }\n+            enforceDeletingChannelHasNoFgService(pkg, callingUser, channelId);\n             cancelAllNotificationsInt(MY_UID, MY_PID, pkg, channelId, 0, 0, true,\n-                    UserHandle.getUserId(callingUid), REASON_CHANNEL_BANNED, null);\n+                    callingUser, REASON_CHANNEL_BANNED, null);\n             mPreferencesHelper.deleteNotificationChannel(pkg, callingUid, channelId);\n             mListeners.notifyNotificationChannelChanged(pkg,\n                     UserHandle.getUserHandleForUid(callingUid),\n@@ -3416,19 +3434,23 @@\n         public void deleteConversationNotificationChannels(String pkg, int uid,\n                 String conversationId) {\n             checkCallerIsSystem();\n-            final int callingUid = Binder.getCallingUid();\n             List<NotificationChannel> channels =\n                     mPreferencesHelper.getNotificationChannelsByConversationId(\n                             pkg, uid, conversationId);\n             if (!channels.isEmpty()) {\n+                // Preflight for fg service notifications in these channels:  do nothing\n+                // unless they're all eligible\n+                final int appUserId = UserHandle.getUserId(uid);\n                 for (NotificationChannel nc : channels) {\n+                    final String channelId = nc.getId();\n+                    mAmi.stopForegroundServicesForChannel(pkg, appUserId, channelId);\n                     cancelAllNotificationsInt(MY_UID, MY_PID, pkg, nc.getId(), 0, 0, true,\n-                            UserHandle.getUserId(callingUid), REASON_CHANNEL_BANNED, null);\n-                    mPreferencesHelper.deleteNotificationChannel(pkg, callingUid, nc.getId());\n+                            appUserId, REASON_CHANNEL_BANNED, null);\n+                    mPreferencesHelper.deleteNotificationChannel(pkg, uid, channelId);\n                     mListeners.notifyNotificationChannelChanged(pkg,\n-                            UserHandle.getUserHandleForUid(callingUid),\n+                            UserHandle.getUserHandleForUid(uid),\n                             mPreferencesHelper.getNotificationChannel(\n-                                    pkg, callingUid, nc.getId(), true),\n+                                    pkg, uid, channelId, true),\n                             NOTIFICATION_CHANNEL_OR_GROUP_DELETED);\n                 }\n                 handleSavePolicyFile();\n@@ -3459,13 +3481,20 @@\n             NotificationChannelGroup groupToDelete =\n                     mPreferencesHelper.getNotificationChannelGroup(groupId, pkg, callingUid);\n             if (groupToDelete != null) {\n+                // Preflight for allowability\n+                final int userId = UserHandle.getUserId(callingUid);\n+                List<NotificationChannel> groupChannels = groupToDelete.getChannels();\n+                for (int i = 0; i < groupChannels.size(); i++) {\n+                    enforceDeletingChannelHasNoFgService(pkg, userId,\n+                            groupChannels.get(i).getId());\n+                }\n                 List<NotificationChannel> deletedChannels =\n                         mPreferencesHelper.deleteNotificationChannelGroup(pkg, callingUid, groupId);\n                 for (int i = 0; i < deletedChannels.size(); i++) {\n                     final NotificationChannel deletedChannel = deletedChannels.get(i);\n                     cancelAllNotificationsInt(MY_UID, MY_PID, pkg, deletedChannel.getId(), 0, 0,\n                             true,\n-                            UserHandle.getUserId(Binder.getCallingUid()), REASON_CHANNEL_BANNED,\n+                            userId, REASON_CHANNEL_BANNED,\n                             null);\n                     mListeners.notifyNotificationChannelChanged(pkg,\n                             UserHandle.getUserHandleForUid(callingUid),"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/services/tests/uiservicestests/src/com/android/server/notification/NotificationManagerServiceTest.java b/services/tests/uiservicestests/src/com/android/server/notification/NotificationManagerServiceTest.java\nindex a55d28e..876e63e9 100755\n--- a/services/tests/uiservicestests/src/com/android/server/notification/NotificationManagerServiceTest.java\n+++ b/services/tests/uiservicestests/src/com/android/server/notification/NotificationManagerServiceTest.java",
+          "files": [
+            "/platform/frameworks/base/+/e75b482280d41a893e5d525864c07bd7cd59a7ef/services/tests/uiservicestests/src/com/android/server/notification/NotificationManagerServiceTest.java",
+            "/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad/services/tests/uiservicestests/src/com/android/server/notification/NotificationManagerServiceTest.java"
+          ]
+        },
+        "diffUnified": "@@ -496,7 +496,8 @@\n                 mGroupHelper, mAm, mAtm, mAppUsageStats,\n                 mock(DevicePolicyManagerInternal.class), mUgm, mUgmInternal,\n                 mAppOpsManager, mUm, mHistoryManager, mStatsManager,\n-                mock(TelephonyManager.class));\n+                mock(TelephonyManager.class),\n+                mock(ActivityManagerInternal.class));\n         mService.onBootPhase(SystemService.PHASE_SYSTEM_SERVICES_READY);\n \n         mService.setAudioManager(mAudioManager);"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/services/tests/uiservicestests/src/com/android/server/notification/RoleObserverTest.java b/services/tests/uiservicestests/src/com/android/server/notification/RoleObserverTest.java\nindex ac2c619..1918edb 100644\n--- a/services/tests/uiservicestests/src/com/android/server/notification/RoleObserverTest.java\n+++ b/services/tests/uiservicestests/src/com/android/server/notification/RoleObserverTest.java",
+          "files": [
+            "/platform/frameworks/base/+/e75b482280d41a893e5d525864c07bd7cd59a7ef/services/tests/uiservicestests/src/com/android/server/notification/RoleObserverTest.java",
+            "/platform/frameworks/base/+/8cb7e0a881fed2a7d80b69aed77275bd483043ad/services/tests/uiservicestests/src/com/android/server/notification/RoleObserverTest.java"
+          ]
+        },
+        "diffUnified": "@@ -32,6 +32,7 @@\n import static org.mockito.Mockito.when;\n \n import android.app.ActivityManager;\n+import android.app.ActivityManagerInternal;\n import android.app.AppOpsManager;\n import android.app.IActivityManager;\n import android.app.IUriGrantsManager;\n@@ -156,7 +157,8 @@\n                     mock(DevicePolicyManagerInternal.class), mock(IUriGrantsManager.class),\n                     mock(UriGrantsManagerInternal.class),\n                     mock(AppOpsManager.class), mUm, mock(NotificationHistoryManager.class),\n-                    mock(StatsManager.class), mock(TelephonyManager.class));\n+                    mock(StatsManager.class), mock(TelephonyManager.class),\n+                    mock(ActivityManagerInternal.class));\n         } catch (SecurityException e) {\n             if (!e.getMessage().contains(\"Permission Denial: not allowed to send broadcast\")) {\n                 throw e;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Updated AOSP versions": "8.1, 9, 10, 11"
+},
+{
+  "_id": {
+    "$oid": "65e018a1a32673717204542e"
+  },
+  "CVE": "CVE-2020-0368",
+  "References": {
+    "text": "A-143230980\n          [2]",
+    "link": "https://android.googlesource.com/platform/frameworks/base/+/6e1dc4f73597467f0895b9abe186dafd7ea23f2e",
+    "metaData": {
+      "commit": "6e1dc4f73597467f0895b9abe186dafd7ea23f2e",
+      "author": "Hall Liu <hallliu@google.com>",
+      "committer": "Hall Liu <hallliu@google.com>",
+      "tree": "609075f66f7cd3214f385b6781fd21384dfbb7f9",
+      "parent": "3516e98daa362286cd7e1daec7ef1e207e34c5b4 [diff]"
+    },
+    "metadataMessage": "Allow empty tokens in strict grammar\n\nAllow empty tokens in SQLiteQueryBuilder's strict grammar enforcement\n\nBug: 143230980\nTest: atest SQLiteQueryBuilderTest, manual\nChange-Id: Ie82dded77a3eaa75095333b0e77f10e21c9f7caf\n(cherry picked from commit ea5b2c08df2e01139b8607f6bc0085bc70a17f1d)\nMerged-In: Ie82dded77a3eaa75095333b0e77f10e21c9f7caf",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/core/java/android/provider/CallLog.java b/core/java/android/provider/CallLog.java\nindex a0e92b3..276f162 100644\n--- a/core/java/android/provider/CallLog.java\n+++ b/core/java/android/provider/CallLog.java",
+          "files": [
+            "/platform/frameworks/base/+/3516e98daa362286cd7e1daec7ef1e207e34c5b4/core/java/android/provider/CallLog.java",
+            "/platform/frameworks/base/+/6e1dc4f73597467f0895b9abe186dafd7ea23f2e/core/java/android/provider/CallLog.java"
+          ]
+        },
+        "diffUnified": "@@ -99,6 +99,13 @@\n         public static final String LIMIT_PARAM_KEY = \"limit\";\n \n         /**\n+         * Form of {@link #CONTENT_URI} which limits the query results to a single result.\n+         */\n+        private static final Uri CONTENT_URI_LIMIT_1 = CONTENT_URI.buildUpon()\n+                .appendQueryParameter(LIMIT_PARAM_KEY, \"1\")\n+                .build();\n+\n+        /**\n          * Query parameter used to specify the starting record to return.\n          * <p>\n          * TYPE: integer\n@@ -932,11 +939,11 @@\n             Cursor c = null;\n             try {\n                 c = resolver.query(\n-                    CONTENT_URI,\n+                    CONTENT_URI_LIMIT_1,\n                     new String[] {NUMBER},\n                     TYPE + \" = \" + OUTGOING_TYPE,\n                     null,\n-                    DEFAULT_SORT_ORDER + \" LIMIT 1\");\n+                    DEFAULT_SORT_ORDER);\n                 if (c == null || !c.moveToFirst()) {\n                     return \"\";\n                 }"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Updated AOSP versions": "11"
+},
+{
+  "_id": {
+    "$oid": "65e018ddfb35d33ffcf2a47b"
+  },
+  "CVE": "CVE-2020-14381",
+  "References": {
+    "text": "A-175193031\n            Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/8019ad13ef7f64be44d4f892af9c840179009254",
+    "metaData": {
+      "commit": "8019ad13ef7f64be44d4f892af9c840179009254",
+      "author": "Peter Zijlstra <peterz@infradead.org>",
+      "committer": "Peter Zijlstra <peterz@infradead.org>",
+      "tree": "889b754b07fa844410d6782bc1b4473007a9bc99",
+      "parent": "98d54f81e36ba3bf92172791eba5ca5bd813989b [diff]"
+    },
+    "metadataMessage": "futex: Fix inode life-time issue\n\nAs reported by Jann, ihold() does not in fact guarantee inode\npersistence. And instead of making it so, replace the usage of inode\npointers with a per boot, machine wide, unique inode identifier.\n\nThis sequence number is global, but shared (file backed) futexes are\nrare enough that this should not become a performance issue.\n\nReported-by: Jann Horn <jannh@google.com>\nSuggested-by: Linus Torvalds <torvalds@linux-foundation.org>\nSigned-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/fs/inode.c b/fs/inode.c\nindex 7d57068..93d9252 100644\n--- a/fs/inode.c\n+++ b/fs/inode.c",
+          "files": [
+            "/kernel/common/+/98d54f81e36ba3bf92172791eba5ca5bd813989b/fs/inode.c",
+            "/kernel/common/+/8019ad13ef7f64be44d4f892af9c840179009254/fs/inode.c"
+          ]
+        },
+        "diffUnified": "@@ -138,6 +138,7 @@\n \tinode->i_sb = sb;\n \tinode->i_blkbits = sb->s_blocksize_bits;\n \tinode->i_flags = 0;\n+\tatomic64_set(&inode->i_sequence, 0);\n \tatomic_set(&inode->i_count, 1);\n \tinode->i_op = &empty_iops;\n \tinode->i_fop = &no_open_fops;"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/include/linux/fs.h b/include/linux/fs.h\nindex 3cd4fe6..abedbff 100644\n--- a/include/linux/fs.h\n+++ b/include/linux/fs.h",
+          "files": [
+            "/kernel/common/+/98d54f81e36ba3bf92172791eba5ca5bd813989b/include/linux/fs.h",
+            "/kernel/common/+/8019ad13ef7f64be44d4f892af9c840179009254/include/linux/fs.h"
+          ]
+        },
+        "diffUnified": "@@ -698,6 +698,7 @@\n \t\tstruct rcu_head\t\ti_rcu;\n \t};\n \tatomic64_t\t\ti_version;\n+\tatomic64_t\t\ti_sequence; /* see futex */\n \tatomic_t\t\ti_count;\n \tatomic_t\t\ti_dio_count;\n \tatomic_t\t\ti_writecount;"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/include/linux/futex.h b/include/linux/futex.h\nindex 5cc3fed..b70df27d 100644\n--- a/include/linux/futex.h\n+++ b/include/linux/futex.h",
+          "files": [
+            "/kernel/common/+/98d54f81e36ba3bf92172791eba5ca5bd813989b/include/linux/futex.h",
+            "/kernel/common/+/8019ad13ef7f64be44d4f892af9c840179009254/include/linux/futex.h"
+          ]
+        },
+        "diffUnified": "@@ -31,23 +31,26 @@\n \n union futex_key {\n \tstruct {\n+\t\tu64 i_seq;\n \t\tunsigned long pgoff;\n-\t\tstruct inode *inode;\n-\t\tint offset;\n+\t\tunsigned int offset;\n \t} shared;\n \tstruct {\n+\t\tunion {\n+\t\t\tstruct mm_struct *mm;\n+\t\t\tu64 __tmp;\n+\t\t};\n \t\tunsigned long address;\n-\t\tstruct mm_struct *mm;\n-\t\tint offset;\n+\t\tunsigned int offset;\n \t} private;\n \tstruct {\n+\t\tu64 ptr;\n \t\tunsigned long word;\n-\t\tvoid *ptr;\n-\t\tint offset;\n+\t\tunsigned int offset;\n \t} both;\n };\n \n-#define FUTEX_KEY_INIT (union futex_key) { .both = { .ptr = NULL } }\n+#define FUTEX_KEY_INIT (union futex_key) { .both = { .ptr = 0ULL } }\n \n #ifdef CONFIG_FUTEX\n enum {"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/kernel/futex.c b/kernel/futex.c\nindex 0cf84c8..e14f7cd 100644\n--- a/kernel/futex.c\n+++ b/kernel/futex.c",
+          "files": [
+            "/kernel/common/+/98d54f81e36ba3bf92172791eba5ca5bd813989b/kernel/futex.c",
+            "/kernel/common/+/8019ad13ef7f64be44d4f892af9c840179009254/kernel/futex.c"
+          ]
+        },
+        "diffUnified": "@@ -429,7 +429,7 @@\n \n \tswitch (key->both.offset & (FUT_OFF_INODE|FUT_OFF_MMSHARED)) {\n \tcase FUT_OFF_INODE:\n-\t\tihold(key->shared.inode); /* implies smp_mb(); (B) */\n+\t\tsmp_mb();\t\t/* explicit smp_mb(); (B) */\n \t\tbreak;\n \tcase FUT_OFF_MMSHARED:\n \t\tfutex_get_mm(key); /* implies smp_mb(); (B) */\n@@ -463,7 +463,6 @@\n \n \tswitch (key->both.offset & (FUT_OFF_INODE|FUT_OFF_MMSHARED)) {\n \tcase FUT_OFF_INODE:\n-\t\tiput(key->shared.inode);\n \t\tbreak;\n \tcase FUT_OFF_MMSHARED:\n \t\tmmdrop(key->private.mm);\n@@ -505,6 +504,46 @@\n \treturn timeout;\n }\n \n+/*\n+ * Generate a machine wide unique identifier for this inode.\n+ *\n+ * This relies on u64 not wrapping in the life-time of the machine; which with\n+ * 1ns resolution means almost 585 years.\n+ *\n+ * This further relies on the fact that a well formed program will not unmap\n+ * the file while it has a (shared) futex waiting on it. This mapping will have\n+ * a file reference which pins the mount and inode.\n+ *\n+ * If for some reason an inode gets evicted and read back in again, it will get\n+ * a new sequence number and will _NOT_ match, even though it is the exact same\n+ * file.\n+ *\n+ * It is important that match_futex() will never have a false-positive, esp.\n+ * for PI futexes that can mess up the state. The above argues that false-negatives\n+ * are only possible for malformed programs.\n+ */\n+static u64 get_inode_sequence_number(struct inode *inode)\n+{\n+\tstatic atomic64_t i_seq;\n+\tu64 old;\n+\n+\t/* Does the inode already have a sequence number? */\n+\told = atomic64_read(&inode->i_sequence);\n+\tif (likely(old))\n+\t\treturn old;\n+\n+\tfor (;;) {\n+\t\tu64 new = atomic64_add_return(1, &i_seq);\n+\t\tif (WARN_ON_ONCE(!new))\n+\t\t\tcontinue;\n+\n+\t\told = atomic64_cmpxchg_relaxed(&inode->i_sequence, 0, new);\n+\t\tif (old)\n+\t\t\treturn old;\n+\t\treturn new;\n+\t}\n+}\n+\n /**\n  * get_futex_key() - Get parameters which are the keys for a futex\n  * @uaddr:\tvirtual address of the futex\n@@ -517,9 +556,15 @@\n  *\n  * The key words are stored in @key on success.\n  *\n- * For shared mappings, it's (page->index, file_inode(vma->vm_file),\n- * offset_within_page).  For private mappings, it's (uaddr, current->mm).\n- * We can usually work out the index without swapping in the page.\n+ * For shared mappings (when @fshared), the key is:\n+ *   ( inode->i_sequence, page->index, offset_within_page )\n+ * [ also see get_inode_sequence_number() ]\n+ *\n+ * For private mappings (or when !@fshared), the key is:\n+ *   ( current->mm, address, 0 )\n+ *\n+ * This allows (cross process, where applicable) identification of the futex\n+ * without keeping the page pinned for the duration of the FUTEX_WAIT.\n  *\n  * lock_page() might sleep, the caller should not hold a spinlock.\n  */\n@@ -659,8 +704,6 @@\n \t\tkey->private.mm = mm;\n \t\tkey->private.address = address;\n \n-\t\tget_futex_key_refs(key); /* implies smp_mb(); (B) */\n-\n \t} else {\n \t\tstruct inode *inode;\n \n@@ -692,40 +735,14 @@\n \t\t\tgoto again;\n \t\t}\n \n-\t\t/*\n-\t\t * Take a reference unless it is about to be freed. Previously\n-\t\t * this reference was taken by ihold under the page lock\n-\t\t * pinning the inode in place so i_lock was unnecessary. The\n-\t\t * only way for this check to fail is if the inode was\n-\t\t * truncated in parallel which is almost certainly an\n-\t\t * application bug. In such a case, just retry.\n-\t\t *\n-\t\t * We are not calling into get_futex_key_refs() in file-backed\n-\t\t * cases, therefore a successful atomic_inc return below will\n-\t\t * guarantee that get_futex_key() will still imply smp_mb(); (B).\n-\t\t */\n-\t\tif (!atomic_inc_not_zero(&inode->i_count)) {\n-\t\t\trcu_read_unlock();\n-\t\t\tput_page(page);\n-\n-\t\t\tgoto again;\n-\t\t}\n-\n-\t\t/* Should be impossible but lets be paranoid for now */\n-\t\tif (WARN_ON_ONCE(inode->i_mapping != mapping)) {\n-\t\t\terr = -EFAULT;\n-\t\t\trcu_read_unlock();\n-\t\t\tiput(inode);\n-\n-\t\t\tgoto out;\n-\t\t}\n-\n \t\tkey->both.offset |= FUT_OFF_INODE; /* inode-based key */\n-\t\tkey->shared.inode = inode;\n+\t\tkey->shared.i_seq = get_inode_sequence_number(inode);\n \t\tkey->shared.pgoff = basepage_index(tail);\n \t\trcu_read_unlock();\n \t}\n \n+\tget_futex_key_refs(key); /* implies smp_mb(); (B) */\n+\n out:\n \tput_page(page);\n \treturn err;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "Futex"
+},
+{
+  "_id": {
+    "$oid": "65e018ddfb35d33ffcf2a47c"
+  },
+  "CVE": "CVE-2021-3347",
+  "References": {
+    "text": "A-171705902\n            Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/6e7bfa046de8",
+    "metaData": {
+      "commit": "6e7bfa046de83596c2a50f72e8ced1ee327db654",
+      "author": "Thomas Gleixner <tglx@linutronix.de>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "8726fd4e87912f9542eb5920f0ab452ca3d1f22c",
+      "parent": "a4649185a98eb7adbdbdfdbf61237d518861e877 [diff]"
+    },
+    "metadataMessage": "futex: Handle faults correctly for PI futexes\n\ncommit 34b1a1ce1458f50ef27c54e28eb9b1947012907a upstream\n\nfixup_pi_state_owner() tries to ensure that the state of the rtmutex,\npi_state and the user space value related to the PI futex are consistent\nbefore returning to user space. In case that the user space value update\nfaults and the fault cannot be resolved by faulting the page in via\nfault_in_user_writeable() the function returns with -EFAULT and leaves\nthe rtmutex and pi_state owner state inconsistent.\n\nA subsequent futex_unlock_pi() operates on the inconsistent pi_state and\nreleases the rtmutex despite not owning it which can corrupt the RB tree of\nthe rtmutex and cause a subsequent kernel stack use after free.\n\nIt was suggested to loop forever in fixup_pi_state_owner() if the fault\ncannot be resolved, but that results in runaway tasks which is especially\nundesired when the problem happens due to a programming error and not due\nto malice.\n\nAs the user space value cannot be fixed up, the proper solution is to make\nthe rtmutex and the pi_state consistent so both have the same owner. This\nleaves the user space value out of sync. Any subsequent operation on the\nfutex will fail because the 10th rule of PI futexes (pi_state owner and\nuser space value are consistent) has been violated.\n\nAs a consequence this removes the inept attempts of 'fixing' the situation\nin case that the current task owns the rtmutex when returning with an\nunresolvable fault by unlocking the rtmutex which left pi_state::owner and\nrtmutex::owner out of sync in a different and only slightly less dangerous\nway.\n\nFixes: 1b7558e457ed (\"futexes: fix fault handling in futex_lock_pi\")\nReported-by: gzobqq@gmail.com\nSigned-off-by: Thomas Gleixner <tglx@linutronix.de>\nAcked-by: Peter Zijlstra (Intel) <peterz@infradead.org>\nCc: stable@vger.kernel.org\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/kernel/futex.c b/kernel/futex.c\nindex e04bb97..224adcd 100644\n--- a/kernel/futex.c\n+++ b/kernel/futex.c",
+          "files": [
+            "/kernel/common/+/a4649185a98eb7adbdbdfdbf61237d518861e877/kernel/futex.c",
+            "/kernel/common/+/6e7bfa046de83596c2a50f72e8ced1ee327db654/kernel/futex.c"
+          ]
+        },
+        "diffUnified": "@@ -1034,7 +1034,8 @@\n  *\tFUTEX_OWNER_DIED bit. See [4]\n  *\n  * [10] There is no transient state which leaves owner and user space\n- *\tTID out of sync.\n+ *\tTID out of sync. Except one error case where the kernel is denied\n+ *\twrite access to the user address, see fixup_pi_state_owner().\n  *\n  *\n  * Serialization and lifetime rules:\n@@ -2596,6 +2597,24 @@\n \tif (!err)\n \t\tgoto retry;\n \n+\t/*\n+\t * fault_in_user_writeable() failed so user state is immutable. At\n+\t * best we can make the kernel state consistent but user state will\n+\t * be most likely hosed and any subsequent unlock operation will be\n+\t * rejected due to PI futex rule [10].\n+\t *\n+\t * Ensure that the rtmutex owner is also the pi_state owner despite\n+\t * the user space value claiming something different. There is no\n+\t * point in unlocking the rtmutex if current is the owner as it\n+\t * would need to wait until the next waiter has taken the rtmutex\n+\t * to guarantee consistent state. Keep it simple. Userspace asked\n+\t * for this wreckaged state.\n+\t *\n+\t * The rtmutex has an owner - either current or some other\n+\t * task. See the EAGAIN loop above.\n+\t */\n+\tpi_state_update_owner(pi_state, rt_mutex_owner(&pi_state->pi_mutex));\n+\n \treturn err;\n }\n \n@@ -2885,7 +2904,6 @@\n \t\t\t ktime_t *time, int trylock)\n {\n \tstruct hrtimer_sleeper timeout, *to = NULL;\n-\tstruct futex_pi_state *pi_state = NULL;\n \tstruct task_struct *exiting = NULL;\n \tstruct rt_mutex_waiter rt_waiter;\n \tstruct futex_hash_bucket *hb;\n@@ -3028,23 +3046,9 @@\n \tif (res)\n \t\tret = (res < 0) ? res : 0;\n \n-\t/*\n-\t * If fixup_owner() faulted and was unable to handle the fault, unlock\n-\t * it and return the fault to userspace.\n-\t */\n-\tif (ret && (rt_mutex_owner(&q.pi_state->pi_mutex) == current)) {\n-\t\tpi_state = q.pi_state;\n-\t\tget_pi_state(pi_state);\n-\t}\n-\n \t/* Unqueue and drop the lock */\n \tunqueue_me_pi(&q);\n \n-\tif (pi_state) {\n-\t\trt_mutex_futex_unlock(&pi_state->pi_mutex);\n-\t\tput_pi_state(pi_state);\n-\t}\n-\n \tgoto out_put_key;\n \n out_unlock_put_key:\n@@ -3310,7 +3314,6 @@\n \t\t\t\t u32 __user *uaddr2)\n {\n \tstruct hrtimer_sleeper timeout, *to = NULL;\n-\tstruct futex_pi_state *pi_state = NULL;\n \tstruct rt_mutex_waiter rt_waiter;\n \tstruct futex_hash_bucket *hb;\n \tunion futex_key key2 = FUTEX_KEY_INIT;\n@@ -3395,10 +3398,6 @@\n \t\tif (q.pi_state && (q.pi_state->owner != current)) {\n \t\t\tspin_lock(q.lock_ptr);\n \t\t\tret = fixup_pi_state_owner(uaddr2, &q, current);\n-\t\t\tif (ret < 0 && rt_mutex_owner(&q.pi_state->pi_mutex) == current) {\n-\t\t\t\tpi_state = q.pi_state;\n-\t\t\t\tget_pi_state(pi_state);\n-\t\t\t}\n \t\t\t/*\n \t\t\t * Drop the reference to the pi state which\n \t\t\t * the requeue_pi() code acquired for us.\n@@ -3440,25 +3439,10 @@\n \t\tif (res)\n \t\t\tret = (res < 0) ? res : 0;\n \n-\t\t/*\n-\t\t * If fixup_pi_state_owner() faulted and was unable to handle\n-\t\t * the fault, unlock the rt_mutex and return the fault to\n-\t\t * userspace.\n-\t\t */\n-\t\tif (ret && rt_mutex_owner(&q.pi_state->pi_mutex) == current) {\n-\t\t\tpi_state = q.pi_state;\n-\t\t\tget_pi_state(pi_state);\n-\t\t}\n-\n \t\t/* Unqueue and drop the lock. */\n \t\tunqueue_me_pi(&q);\n \t}\n \n-\tif (pi_state) {\n-\t\trt_mutex_futex_unlock(&pi_state->pi_mutex);\n-\t\tput_pi_state(pi_state);\n-\t}\n-\n \tif (ret == -EINTR) {\n \t\t/*\n \t\t * We've already been requeued, but cannot restart by calling"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "Futex"
+},
+{
+  "_id": {
+    "$oid": "65e018ddfb35d33ffcf2a47d"
+  },
+  "CVE": "CVE-2021-28375",
+  "References": {
+    "text": "A-183188047\n            Upstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/20c40794eb85ea29852d7bc37c55713802a543d6",
+    "metaData": {
+      "commit": "20c40794eb85ea29852d7bc37c55713802a543d6",
+      "author": "Dmitry Baryshkov <dmitry.baryshkov@linaro.org>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "429f27645a223f926cbcf55b40e167c56bf65edc",
+      "parent": "1201d68f4781141411e734315f22457e6ea2cfcb [diff]"
+    },
+    "metadataMessage": "misc: fastrpc: restrict user apps from sending kernel RPC messages\n\nVerify that user applications are not using the kernel RPC message\nhandle to restrict them from directly attaching to guest OS on the\nremote subsystem. This is a port of CVE-2019-2308 fix.\n\nFixes: c68cfb718c8f (\"misc: fastrpc: Add support for context Invoke method\")\nCc: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>\nCc: Jonathan Marek <jonathan@marek.ca>\nCc: stable@vger.kernel.org\nSigned-off-by: Dmitry Baryshkov <dmitry.baryshkov@linaro.org>\nLink: https://lore.kernel.org/r/20210212192658.3476137-1-dmitry.baryshkov@linaro.org\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c\nindex f12e909..beda610 100644\n--- a/drivers/misc/fastrpc.c\n+++ b/drivers/misc/fastrpc.c",
+          "files": [
+            "/kernel/common/+/1201d68f4781141411e734315f22457e6ea2cfcb/drivers/misc/fastrpc.c",
+            "/kernel/common/+/20c40794eb85ea29852d7bc37c55713802a543d6/drivers/misc/fastrpc.c"
+          ]
+        },
+        "diffUnified": "@@ -950,6 +950,11 @@\n \tif (!fl->cctx->rpdev)\n \t\treturn -EPIPE;\n \n+\tif (handle == FASTRPC_INIT_HANDLE && !kernel) {\n+\t\tdev_warn_ratelimited(fl->sctx->dev, \"user app trying to send a kernel RPC message (%d)\\n\",  handle);\n+\t\treturn -EPERM;\n+\t}\n+\n \tctx = fastrpc_context_alloc(fl, kernel, sc, args);\n \tif (IS_ERR(ctx))\n \t\treturn PTR_ERR(ctx);"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "FastRPC"
+},
+{
+  "_id": {
+    "$oid": "65e019e05febc112b231f8eb"
+  },
+  "CVE": "CVE-2021-0695",
+  "References": {
+    "text": "A-184018316\nUpstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/2398e650c58a6f4877dafce649188290f6e3b4f5",
+    "metaData": {
+      "commit": "2398e650c58a6f4877dafce649188290f6e3b4f5",
+      "author": "Will McVicker <willmcvicker@google.com>",
+      "committer": "Will McVicker <willmcvicker@google.com>",
+      "tree": "8b84836f4d0eefc67e8d15759d7a8cf7a5de47ce",
+      "parent": "e0411c7e2887d62350211c633f7c45b68b63282f [diff]"
+    },
+    "metadataMessage": "ANDROID: xt_qtaguid: fix UAF race\n\nMake sure to hold the sock_tag_list_lock while accessing the tag to\navoid a race between getting the tag and free'ing the tag.\n\nBug: 184018316\nFixes: c7ca0ac69702 (\"ANDROID: netfilter: xt_qtaguid: add qtaguid matching module\")\nSigned-off-by: Will McVicker <willmcvicker@google.com>\nChange-Id: I62404bdaa602586e00821a7d4c5f9b9868a0e90a",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/net/netfilter/xt_qtaguid.c b/net/netfilter/xt_qtaguid.c\nindex a61f436..635fcf7 100644\n--- a/net/netfilter/xt_qtaguid.c\n+++ b/net/netfilter/xt_qtaguid.c",
+          "files": [
+            "/kernel/common/+/e0411c7e2887d62350211c633f7c45b68b63282f/net/netfilter/xt_qtaguid.c",
+            "/kernel/common/+/2398e650c58a6f4877dafce649188290f6e3b4f5/net/netfilter/xt_qtaguid.c"
+          ]
+        },
+        "diffUnified": "@@ -1067,18 +1067,6 @@\n \treturn sock_tag_tree_search(&sock_tag_tree, sk);\n }\n \n-static struct sock_tag *get_sock_stat(const struct sock *sk)\n-{\n-\tstruct sock_tag *sock_tag_entry;\n-\tMT_DEBUG(\"qtaguid: get_sock_stat(sk=%p)\\n\", sk);\n-\tif (!sk)\n-\t\treturn NULL;\n-\tspin_lock_bh(&sock_tag_list_lock);\n-\tsock_tag_entry = get_sock_stat_nl(sk);\n-\tspin_unlock_bh(&sock_tag_list_lock);\n-\treturn sock_tag_entry;\n-}\n-\n static int ipx_proto(const struct sk_buff *skb,\n \t\t     struct xt_action_param *par)\n {\n@@ -1313,12 +1301,15 @@\n \t * Look for a tagged sock.\n \t * It will have an acct_uid.\n \t */\n-\tsock_tag_entry = get_sock_stat(sk);\n+\tspin_lock_bh(&sock_tag_list_lock);\n+\tsock_tag_entry = sk ? get_sock_stat_nl(sk) : NULL;\n \tif (sock_tag_entry) {\n \t\ttag = sock_tag_entry->tag;\n \t\tacct_tag = get_atag_from_tag(tag);\n \t\tuid_tag = get_utag_from_tag(tag);\n-\t} else {\n+\t}\n+\tspin_unlock_bh(&sock_tag_list_lock);\n+\tif (!sock_tag_entry) {\n \t\tacct_tag = make_atag_from_value(0);\n \t\ttag = combine_atag_with_uid(acct_tag, uid);\n \t\tuid_tag = make_tag_from_uid(uid);"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "Kernel"
+},
+{
+  "_id": {
+    "$oid": "65e019f9a21a3099363dbdfa"
+  },
+  "CVE": "CVE-2020-10768",
+  "References": {
+    "text": "A-169505929\nUpstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/4d8df8cbb9156b0a0ab3f802b80cb5db57acc0bf",
+    "metaData": {
+      "commit": "4d8df8cbb9156b0a0ab3f802b80cb5db57acc0bf",
+      "author": "Anthony Steinhauser <asteinhauser@google.com>",
+      "committer": "Thomas Gleixner <tglx@linutronix.de>",
+      "tree": "0b12815b3168562c696e346601624c8c469a6711",
+      "parent": "dbbe2ad02e9df26e372f38cc3e70dab9222c832e [diff]"
+    },
+    "metadataMessage": "x86/speculation: PR_SPEC_FORCE_DISABLE enforcement for indirect branches.\n\nCurrently, it is possible to enable indirect branch speculation even after\nit was force-disabled using the PR_SPEC_FORCE_DISABLE option. Moreover, the\nPR_GET_SPECULATION_CTRL command gives afterwards an incorrect result\n(force-disabled when it is in fact enabled). This also is inconsistent\nvs. STIBP and the documention which cleary states that\nPR_SPEC_FORCE_DISABLE cannot be undone.\n\nFix this by actually enforcing force-disabled indirect branch\nspeculation. PR_SPEC_ENABLE called after PR_SPEC_FORCE_DISABLE now fails\nwith -EPERM as described in the documentation.\n\nFixes: 9137bb27e60e (\"x86/speculation: Add prctl() control for indirect branch speculation\")\nSigned-off-by: Anthony Steinhauser <asteinhauser@google.com>\nSigned-off-by: Thomas Gleixner <tglx@linutronix.de>\nCc: stable@vger.kernel.org",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/arch/x86/kernel/cpu/bugs.c b/arch/x86/kernel/cpu/bugs.c\nindex 8d57562..56f573a 100644\n--- a/arch/x86/kernel/cpu/bugs.c\n+++ b/arch/x86/kernel/cpu/bugs.c",
+          "files": [
+            "/kernel/common/+/dbbe2ad02e9df26e372f38cc3e70dab9222c832e/arch/x86/kernel/cpu/bugs.c",
+            "/kernel/common/+/4d8df8cbb9156b0a0ab3f802b80cb5db57acc0bf/arch/x86/kernel/cpu/bugs.c"
+          ]
+        },
+        "diffUnified": "@@ -1175,11 +1175,14 @@\n \t\t\treturn 0;\n \t\t/*\n \t\t * Indirect branch speculation is always disabled in strict\n-\t\t * mode.\n+\t\t * mode. It can neither be enabled if it was force-disabled\n+\t\t * by a  previous prctl call.\n+\n \t\t */\n \t\tif (spectre_v2_user_ibpb == SPECTRE_V2_USER_STRICT ||\n \t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT ||\n-\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED)\n+\t\t    spectre_v2_user_stibp == SPECTRE_V2_USER_STRICT_PREFERRED ||\n+\t\t    task_spec_ib_force_disable(task))\n \t\t\treturn -EPERM;\n \t\ttask_clear_spec_ib_disable(task);\n \t\ttask_update_spec_tif(task);"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "i86 Spectre v2 protections"
+},
+{
+  "_id": {
+    "$oid": "65e019faa21a3099363dbdfb"
+  },
+  "CVE": "CVE-2020-29660",
+  "References": {
+    "text": "A-175451844\nUpstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/c8bcd9c5be24fb9e6132e97da5a35e55a83e36b9",
+    "metaData": {
+      "commit": "c8bcd9c5be24fb9e6132e97da5a35e55a83e36b9",
+      "author": "Jann Horn <jannh@google.com>",
+      "committer": "Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+      "tree": "1b7e3191d3fd63c02d3029b19e45d88d322397df",
+      "parent": "54ffccbf053b5b6ca4f6e45094b942fab92a25fc [diff]"
+    },
+    "metadataMessage": "tty: Fix ->session locking\n\nCurrently, locking of ->session is very inconsistent; most places\nprotect it using the legacy tty mutex, but disassociate_ctty(),\n__do_SAK(), tiocspgrp() and tiocgsid() don't.\nTwo of the writers hold the ctrl_lock (because they already need it for\n->pgrp), but __proc_set_tty() doesn't do that yet.\n\nOn a PREEMPT=y system, an unprivileged user can theoretically abuse\nthis broken locking to read 4 bytes of freed memory via TIOCGSID if\ntiocgsid() is preempted long enough at the right point. (Other things\nmight also go wrong, especially if root-only ioctls are involved; I'm\nnot sure about that.)\n\nChange the locking on ->session such that:\n\n - tty_lock() is held by all writers: By making disassociate_ctty()\n   hold it. This should be fine because the same lock can already be\n   taken through the call to tty_vhangup_session().\n   The tricky part is that we need to shorten the area covered by\n   siglock to be able to take tty_lock() without ugly retry logic; as\n   far as I can tell, this should be fine, since nothing in the\n   signal_struct is touched in the `if (tty)` branch.\n - ctrl_lock is held by all writers: By changing __proc_set_tty() to\n   hold the lock a little longer.\n - All readers that aren't holding tty_lock() hold ctrl_lock: By\n   adding locking to tiocgsid() and __do_SAK(), and expanding the area\n   covered by ctrl_lock in tiocspgrp().\n\nCc: stable@kernel.org\nSigned-off-by: Jann Horn <jannh@google.com>\nReviewed-by: Jiri Slaby <jirislaby@kernel.org>\nSigned-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/drivers/tty/tty_io.c b/drivers/tty/tty_io.c\nindex 9f8b9a5..56ade99 100644\n--- a/drivers/tty/tty_io.c\n+++ b/drivers/tty/tty_io.c",
+          "files": [
+            "/kernel/common/+/54ffccbf053b5b6ca4f6e45094b942fab92a25fc/drivers/tty/tty_io.c",
+            "/kernel/common/+/c8bcd9c5be24fb9e6132e97da5a35e55a83e36b9/drivers/tty/tty_io.c"
+          ]
+        },
+        "diffUnified": "@@ -2897,10 +2897,14 @@\n \tstruct task_struct *g, *p;\n \tstruct pid *session;\n \tint\t\ti;\n+\tunsigned long flags;\n \n \tif (!tty)\n \t\treturn;\n-\tsession = tty->session;\n+\n+\tspin_lock_irqsave(&tty->ctrl_lock, flags);\n+\tsession = get_pid(tty->session);\n+\tspin_unlock_irqrestore(&tty->ctrl_lock, flags);\n \n \ttty_ldisc_flush(tty);\n \n@@ -2932,6 +2936,7 @@\n \t\ttask_unlock(p);\n \t} while_each_thread(g, p);\n \tread_unlock(&tasklist_lock);\n+\tput_pid(session);\n #endif\n }"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/drivers/tty/tty_jobctrl.c b/drivers/tty/tty_jobctrl.c\nindex baadeea..aa6d053 100644\n--- a/drivers/tty/tty_jobctrl.c\n+++ b/drivers/tty/tty_jobctrl.c",
+          "files": [
+            "/kernel/common/+/54ffccbf053b5b6ca4f6e45094b942fab92a25fc/drivers/tty/tty_jobctrl.c",
+            "/kernel/common/+/c8bcd9c5be24fb9e6132e97da5a35e55a83e36b9/drivers/tty/tty_jobctrl.c"
+          ]
+        },
+        "diffUnified": "@@ -103,8 +103,8 @@\n \tput_pid(tty->session);\n \tput_pid(tty->pgrp);\n \ttty->pgrp = get_pid(task_pgrp(current));\n-\tspin_unlock_irqrestore(&tty->ctrl_lock, flags);\n \ttty->session = get_pid(task_session(current));\n+\tspin_unlock_irqrestore(&tty->ctrl_lock, flags);\n \tif (current->signal->tty) {\n \t\ttty_debug(tty, \"current tty %s not NULL!!\\n\",\n \t\t\t  current->signal->tty->name);\n@@ -293,20 +293,23 @@\n \tspin_lock_irq(&current->sighand->siglock);\n \tput_pid(current->signal->tty_old_pgrp);\n \tcurrent->signal->tty_old_pgrp = NULL;\n-\n \ttty = tty_kref_get(current->signal->tty);\n+\tspin_unlock_irq(&current->sighand->siglock);\n+\n \tif (tty) {\n \t\tunsigned long flags;\n+\n+\t\ttty_lock(tty);\n \t\tspin_lock_irqsave(&tty->ctrl_lock, flags);\n \t\tput_pid(tty->session);\n \t\tput_pid(tty->pgrp);\n \t\ttty->session = NULL;\n \t\ttty->pgrp = NULL;\n \t\tspin_unlock_irqrestore(&tty->ctrl_lock, flags);\n+\t\ttty_unlock(tty);\n \t\ttty_kref_put(tty);\n \t}\n \n-\tspin_unlock_irq(&current->sighand->siglock);\n \t/* Now clear signal->tty under the lock */\n \tread_lock(&tasklist_lock);\n \tsession_clear_tty(task_session(current));\n@@ -477,14 +480,19 @@\n \t\treturn -ENOTTY;\n \tif (retval)\n \t\treturn retval;\n-\tif (!current->signal->tty ||\n-\t    (current->signal->tty != real_tty) ||\n-\t    (real_tty->session != task_session(current)))\n-\t\treturn -ENOTTY;\n+\n \tif (get_user(pgrp_nr, p))\n \t\treturn -EFAULT;\n \tif (pgrp_nr < 0)\n \t\treturn -EINVAL;\n+\n+\tspin_lock_irq(&real_tty->ctrl_lock);\n+\tif (!current->signal->tty ||\n+\t    (current->signal->tty != real_tty) ||\n+\t    (real_tty->session != task_session(current))) {\n+\t\tretval = -ENOTTY;\n+\t\tgoto out_unlock_ctrl;\n+\t}\n \trcu_read_lock();\n \tpgrp = find_vpid(pgrp_nr);\n \tretval = -ESRCH;\n@@ -494,12 +502,12 @@\n \tif (session_of_pgrp(pgrp) != task_session(current))\n \t\tgoto out_unlock;\n \tretval = 0;\n-\tspin_lock_irq(&real_tty->ctrl_lock);\n \tput_pid(real_tty->pgrp);\n \treal_tty->pgrp = get_pid(pgrp);\n-\tspin_unlock_irq(&real_tty->ctrl_lock);\n out_unlock:\n \trcu_read_unlock();\n+out_unlock_ctrl:\n+\tspin_unlock_irq(&real_tty->ctrl_lock);\n \treturn retval;\n }\n \n@@ -511,20 +519,30 @@\n  *\n  *\tObtain the session id of the tty. If there is no session\n  *\treturn an error.\n- *\n- *\tLocking: none. Reference to current->signal->tty is safe.\n  */\n static int tiocgsid(struct tty_struct *tty, struct tty_struct *real_tty, pid_t __user *p)\n {\n+\tunsigned long flags;\n+\tpid_t sid;\n+\n \t/*\n \t * (tty == real_tty) is a cheap way of\n \t * testing if the tty is NOT a master pty.\n \t*/\n \tif (tty == real_tty && current->signal->tty != real_tty)\n \t\treturn -ENOTTY;\n+\n+\tspin_lock_irqsave(&real_tty->ctrl_lock, flags);\n \tif (!real_tty->session)\n-\t\treturn -ENOTTY;\n-\treturn put_user(pid_vnr(real_tty->session), p);\n+\t\tgoto err;\n+\tsid = pid_vnr(real_tty->session);\n+\tspin_unlock_irqrestore(&real_tty->ctrl_lock, flags);\n+\n+\treturn put_user(sid, p);\n+\n+err:\n+\tspin_unlock_irqrestore(&real_tty->ctrl_lock, flags);\n+\treturn -ENOTTY;\n }\n \n /*"
+      },
+      {
+        "diff": {
+          "description": "diff --git a/include/linux/tty.h b/include/linux/tty.h\nindex a99e9b8..eb33d94 100644\n--- a/include/linux/tty.h\n+++ b/include/linux/tty.h",
+          "files": [
+            "/kernel/common/+/54ffccbf053b5b6ca4f6e45094b942fab92a25fc/include/linux/tty.h",
+            "/kernel/common/+/c8bcd9c5be24fb9e6132e97da5a35e55a83e36b9/include/linux/tty.h"
+          ]
+        },
+        "diffUnified": "@@ -306,6 +306,10 @@\n \tstruct termiox *termiox;\t/* May be NULL for unsupported */\n \tchar name[64];\n \tstruct pid *pgrp;\t\t/* Protected by ctrl lock */\n+\t/*\n+\t * Writes protected by both ctrl lock and legacy mutex, readers must use\n+\t * at least one of them.\n+\t */\n \tstruct pid *session;\n \tunsigned long flags;\n \tint count;"
+      }
+    ]
+  },
+  "Type": "EoP",
+  "Severity": "High",
+  "Component": "TTY"
+},
+{
+  "_id": {
+    "$oid": "65e019faa21a3099363dbdfc"
+  },
+  "CVE": "CVE-2021-29647",
+  "References": {
+    "text": "A-184622099\nUpstream kernel",
+    "link": "https://android.googlesource.com/kernel/common/+/50535249f624d0072cd885bcdce4e4b6fb770160",
+    "metaData": {
+      "commit": "50535249f624d0072cd885bcdce4e4b6fb770160",
+      "author": "Eric Dumazet <edumazet@google.com>",
+      "committer": "David S. Miller <davem@davemloft.net>",
+      "tree": "f715f6988ba18b7c4e464ed6bd26642e20660d10",
+      "parent": "6577b9a551aedb86bca6d4438c28386361845108 [diff]"
+    },
+    "metadataMessage": "net: qrtr: fix a kernel-infoleak in qrtr_recvmsg()\n\nstruct sockaddr_qrtr has a 2-byte hole, and qrtr_recvmsg() currently\ndoes not clear it before copying kernel data to user space.\n\nIt might be too late to name the hole since sockaddr_qrtr structure is uapi.\n\nBUG: KMSAN: kernel-infoleak in kmsan_copy_to_user+0x9c/0xb0 mm/kmsan/kmsan_hooks.c:249\nCPU: 0 PID: 29705 Comm: syz-executor.3 Not tainted 5.11.0-rc7-syzkaller #0\nHardware name: Google Google Compute Engine/Google Compute Engine, BIOS Google 01/01/2011\nCall Trace:\n __dump_stack lib/dump_stack.c:79 [inline]\n dump_stack+0x21c/0x280 lib/dump_stack.c:120\n kmsan_report+0xfb/0x1e0 mm/kmsan/kmsan_report.c:118\n kmsan_internal_check_memory+0x202/0x520 mm/kmsan/kmsan.c:402\n kmsan_copy_to_user+0x9c/0xb0 mm/kmsan/kmsan_hooks.c:249\n instrument_copy_to_user include/linux/instrumented.h:121 [inline]\n _copy_to_user+0x1ac/0x270 lib/usercopy.c:33\n copy_to_user include/linux/uaccess.h:209 [inline]\n move_addr_to_user+0x3a2/0x640 net/socket.c:237\n ____sys_recvmsg+0x696/0xd50 net/socket.c:2575\n ___sys_recvmsg net/socket.c:2610 [inline]\n do_recvmmsg+0xa97/0x22d0 net/socket.c:2710\n __sys_recvmmsg net/socket.c:2789 [inline]\n __do_sys_recvmmsg net/socket.c:2812 [inline]\n __se_sys_recvmmsg+0x24a/0x410 net/socket.c:2805\n __x64_sys_recvmmsg+0x62/0x80 net/socket.c:2805\n do_syscall_64+0x9f/0x140 arch/x86/entry/common.c:48\n entry_SYSCALL_64_after_hwframe+0x44/0xa9\nRIP: 0033:0x465f69\nCode: ff ff c3 66 2e 0f 1f 84 00 00 00 00 00 0f 1f 40 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 c7 c1 bc ff ff ff f7 d8 64 89 01 48\nRSP: 002b:00007f43659d6188 EFLAGS: 00000246 ORIG_RAX: 000000000000012b\nRAX: ffffffffffffffda RBX: 000000000056bf60 RCX: 0000000000465f69\nRDX: 0000000000000008 RSI: 0000000020003e40 RDI: 0000000000000003\nRBP: 00000000004bfa8f R08: 0000000000000000 R09: 0000000000000000\nR10: 0000000000010060 R11: 0000000000000246 R12: 000000000056bf60\nR13: 0000000000a9fb1f R14: 00007f43659d6300 R15: 0000000000022000\n\nLocal variable ----addr@____sys_recvmsg created at:\n ____sys_recvmsg+0x168/0xd50 net/socket.c:2550\n ____sys_recvmsg+0x168/0xd50 net/socket.c:2550\n\nBytes 2-3 of 12 are uninitialized\nMemory access of size 12 starts at ffff88817c627b40\nData copied to user address 0000000020000140\n\nFixes: bdabad3e363d (\"net: Add Qualcomm IPC router\")\nSigned-off-by: Eric Dumazet <edumazet@google.com>\nCc: Courtney Cavin <courtney.cavin@sonymobile.com>\nReported-by: syzbot <syzkaller@googlegroups.com>\nSigned-off-by: David S. Miller <davem@davemloft.net>",
+    "changes": [
+      {
+        "diff": {
+          "description": "diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c\nindex edb6ac1..dfc820e 100644\n--- a/net/qrtr/qrtr.c\n+++ b/net/qrtr/qrtr.c",
+          "files": [
+            "/kernel/common/+/6577b9a551aedb86bca6d4438c28386361845108/net/qrtr/qrtr.c",
+            "/kernel/common/+/50535249f624d0072cd885bcdce4e4b6fb770160/net/qrtr/qrtr.c"
+          ]
+        },
+        "diffUnified": "@@ -1058,6 +1058,11 @@\n \trc = copied;\n \n \tif (addr) {\n+\t\t/* There is an anonymous 2-byte hole after sq_family,\n+\t\t * make sure to clear it.\n+\t\t */\n+\t\tmemset(addr, 0, sizeof(*addr));\n+\n \t\taddr->sq_family = AF_QIPCRTR;\n \t\taddr->sq_node = cb->src_node;\n \t\taddr->sq_port = cb->src_port;"
+      }
+    ]
+  },
+  "Type": "ID",
+  "Severity": "High",
+  "Component": "Qualcomm IPC Router support"
+}]
